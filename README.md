@@ -4,8 +4,8 @@ Small job scraper project for collecting vacancies, saving them to Postgres, and
 
 ## Current flow
 
-- `run_flow.py` reads `example.txt`, saves one vacancy to Postgres, and can send it to Telegram.
-- `run_scraper.py` opens Djinni in Chromium with Playwright, parses visible vacancies, and saves them to Postgres.
+- `manual/run_scraper.py` opens Djinni in Chromium with Playwright, parses visible vacancies, and saves them to Postgres.
+- `manual/run_bot_test.py` starts the temporary Telegram bot polling loop.
 - Browser is visible by default because `SCRAPER_HEADLESS=false`.
 
 ## Local setup
@@ -26,14 +26,14 @@ Install dependencies:
 .venv\Scripts\python.exe -m playwright install chromium
 ```
 
-Run example flow:
-
-```powershell
-.venv\Scripts\python.exe run_flow.py
-```
-
 Run headed Djinni scraper:
 
 ```powershell
-.venv\Scripts\python.exe run_scraper.py
+.venv\Scripts\python.exe manual\run_scraper.py
+```
+
+Run test Telegram bot:
+
+```powershell
+.venv\Scripts\python.exe manual\run_bot_test.py
 ```

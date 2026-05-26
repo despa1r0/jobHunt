@@ -40,18 +40,29 @@ class Vacancy(Base):
     )
 
     def as_telegram_message(self) -> str:
-        parts = [
-            f"Title: {self.title}",
-            f"Source: {self.source}",
-            f"Company: {self.company_name or '-'}",
-            f"Salary: {self.salary or '-'}",
-            f"Location: {self.location or '-'}",
-            f"URL: {self.url}",
-        ]
+        parts = [self.title]
 
-        if self.description:
+        if self.company_name:
+            parts.append(f"Company: {self.company_name}")
+        if self.salary:
+            parts.append(f"Salary: {self.salary}")
+        if self.location:
+            parts.append(f"Location: {self.location}")
+
+        description = _format_description(
+            self.description,
+            title=self.title,
+            company_name=self.company_name,
+            salary=self.salary,
+            location=self.location,
+        )
+        if description:
             parts.append("")
-            parts.append(self.description)
+            parts.append("About:")
+            parts.append(description)
+
+        parts.append("")
+        parts.append(f"Link: {self.url}")
 
         return "\n".join(parts)
 
@@ -78,4 +89,76 @@ def save_vacancies(db: Session, payloads: list[VacancyCreate]) -> list[Vacancy]:
 
 
 def get_latest_vacancy(db: Session) -> Vacancy | None:
-    return db.execute(select(Vacancy).order_by(Vacancy.id.desc())).scalar_one_or_none()
+    statement = select(Vacancy).order_by(Vacancy.id.desc()).limit(1)
+    return db.execute(statement).scalars().first()
+
+
+def count_vacancies(db: Session) -> int:
+    return db.execute(select(func.count(Vacancy.id))).scalar_one()
+
+
+def get_vacancy_page(db: Session, offset: int, limit: int = 1) -> list[Vacancy]:
+    statement = select(Vacancy).order_by(Vacancy.id.desc()).offset(offset).limit(limit)
+    return list(db.execute(statement).scalars())
+
+
+def _format_description(
+    description: str | None,
+    max_lines: int = 12,
+    max_chars: int = 1800,
+    title: str | None = None,
+    company_name: str | None = None,
+    salary: str | None = None,
+    location: str | None = None,
+) -> str:
+    if not description:
+        return ""
+
+    ignored_lines = {
+        "Djinni",
+        "Candidates",
+        "Jobs",
+        "Salaries",
+        "Log In",
+        "Sign Up",
+        "All jobs",
+        "Development",
+        "Python",
+        "Apply for the job",
+    }
+
+    cleaned_lines: list[str] = []
+    for raw_line in description.splitlines():
+        line = raw_line.strip()
+        if not line or line in ignored_lines:
+            continue
+        if title and line == title:
+            continue
+        if company_name and line == company_name:
+            continue
+        if salary and line == salary:
+            continue
+        if location and line == location:
+            continue
+        if line.startswith("Unknown command."):
+            continue
+        if line.startswith("Response activity:"):
+            continue
+        if line.startswith("Last responded"):
+            continue
+        if line.startswith("Published ") or line.startswith("Updated "):
+            continue
+        if line.endswith(" views") or line.endswith(" applications"):
+            continue
+        cleaned_lines.append(line)
+
+    if not cleaned_lines:
+        return ""
+
+    short_lines = cleaned_lines[:max_lines]
+    result = "\n".join(f"- {line}" for line in short_lines)
+
+    if len(result) > max_chars:
+        return result[: max_chars - 3].rstrip() + "..."
+
+    return result

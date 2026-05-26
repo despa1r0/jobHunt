@@ -1,0 +1,244 @@
+import hashlib
+from urllib.parse import urljoin
+
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+
+from app.config import get_settings
+from app.models import VacancyCreate
+
+
+def scrape_djinni_jobs(limit: int | None = None) -> list[VacancyCreate]:
+    settings = get_settings()
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            headless=settings.scraper_headless,
+            slow_mo=250,
+        )
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+
+        try:
+            page.goto(settings.djinni_url, wait_until="domcontentloaded", timeout=60000)
+
+            try:
+                page.wait_for_selector("[id^='job-item-']", timeout=10000)
+            except PlaywrightTimeoutError:
+                print("No Djinni vacancy cards found for current filters.")
+                return []
+
+            urls = _collect_djinni_job_urls(page, limit)
+            print(f"Found Djinni job links: {len(urls)}")
+
+            vacancies: list[VacancyCreate] = []
+            for index, url in enumerate(urls, start=1):
+                print(f"[{index}/{len(urls)}] Opening {url}")
+
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_selector("h1", timeout=10000)
+                    vacancies.append(_parse_djinni_detail_page(page, url))
+                except Exception as exc:
+                    print(f"Failed to parse Djinni vacancy {url}: {exc}")
+
+            return vacancies
+        finally:
+            if not settings.scraper_headless:
+                input("Press Enter to close browser...")
+            browser.close()
+
+
+def _collect_djinni_job_urls(page: Page, limit: int | None) -> list[str]:
+    urls: list[str] = []
+
+    cards = page.locator("[id^='job-item-']").all()
+    for card in cards:
+        link = card.locator("a.job_item__header-link[href*='/jobs/']").first
+
+        if link.count() == 0:
+            continue
+
+        href = link.get_attribute("href")
+        if href:
+            urls.append(urljoin("https://djinni.co", href))
+
+        if limit is not None and len(urls) >= limit:
+            return _unique_urls(urls)
+
+    if not urls:
+        all_urls = page.locator("a").evaluate_all(
+            """(els) => els
+                .map((a) => a.href)
+                .filter((href) => /\\/jobs\\/\\d+-/.test(href))"""
+        )
+        urls.extend(all_urls)
+
+    unique_urls = _unique_urls(urls)
+    if limit is None:
+        return unique_urls
+    return unique_urls[:limit]
+
+
+def _parse_djinni_detail_page(page: Page, url: str) -> VacancyCreate:
+    description = _extract_detail_text(page)
+    page_lines = _extract_page_lines(page)
+    title = _safe_inner_text(page, "h1") or _extract_title_from_lines(page_lines)
+
+    return VacancyCreate(
+        source="djinni",
+        external_id=_build_external_id(url),
+        title=title[:255],
+        company_name=_extract_company_name_from_detail(page_lines, title),
+        salary=_extract_salary(page_lines),
+        location=_extract_location(page_lines),
+        url=url,
+        description=description,
+    )
+
+
+def _extract_detail_text(page: Page) -> str:
+    detail_selectors = [
+        ".job-post__description",
+        "[data-original-text]",
+        "[id^='job-description-'] .js-truncated-text",
+    ]
+
+    for selector in detail_selectors:
+        locator = page.locator(selector).first
+        if locator.count() == 0:
+            continue
+        text = locator.inner_text(timeout=5000).strip()
+        if text:
+            return _clean_description_text(text)
+
+    return _clean_description_text(page.locator("body").inner_text(timeout=10000))
+
+
+def _extract_page_lines(page: Page) -> list[str]:
+    page_text = page.locator(".job-post-page").first
+    if page_text.count() == 0:
+        page_text = page.locator("body").first
+    text = page_text.inner_text(timeout=10000)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _clean_description_text(text: str) -> str:
+    ignored_lines = {
+        "Djinni",
+        "Candidates",
+        "Jobs",
+        "Salaries",
+        "Log In",
+        "Sign Up",
+        "All jobs",
+        "Development",
+        "Python",
+        "Apply for the job",
+    }
+
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = _normalize_text(raw_line)
+        if not line or line in ignored_lines:
+            continue
+        if line.startswith("Response activity:"):
+            continue
+        if line.startswith("Last responded"):
+            continue
+        if line.startswith("Published ") or line.startswith("Updated "):
+            continue
+        if line.endswith(" views") or line.endswith(" applications"):
+            continue
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def _normalize_text(text: str) -> str:
+    replacements = {
+        "\xa0": " ",
+        "\u202f": " ",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    return " ".join(text.split())
+
+
+def _safe_inner_text(page: Page, selector: str) -> str | None:
+    locator = page.locator(selector).first
+    if locator.count() == 0:
+        return None
+    text = locator.inner_text(timeout=5000).strip()
+    return text or None
+
+
+def _extract_title_from_lines(lines: list[str]) -> str:
+    ignored = {"Djinni", "Candidates", "Jobs", "Salaries", "Log In", "Sign Up"}
+    for line in lines:
+        if line not in ignored:
+            return line
+    raise ValueError("Could not extract Djinni vacancy title")
+
+
+def _extract_company_name_from_detail(lines: list[str], title: str) -> str | None:
+    for index, line in enumerate(lines):
+        if line == title and index + 1 < len(lines):
+            return lines[index + 1][:255]
+    return None
+
+
+def _extract_location(lines: list[str]) -> str | None:
+    exact_locations = {
+        "Remote",
+        "Full Remote",
+        "Worldwide",
+        "Ukraine",
+        "Poland",
+        "Countries of Europe or Ukraine",
+    }
+    city_locations = ["Kyiv", "Warsaw", "Lviv"]
+
+    for line in lines:
+        normalized_line = _normalize_text(line)
+        if normalized_line in exact_locations:
+            return normalized_line[:255]
+        if normalized_line in city_locations:
+            return normalized_line[:255]
+        if normalized_line.startswith("Countries of "):
+            return normalized_line[:255]
+        if len(normalized_line) <= 40 and normalized_line.endswith(" Remote"):
+            return normalized_line[:255]
+
+    return None
+
+
+def _extract_salary(lines: list[str]) -> str | None:
+    for line in lines:
+        normalized_line = _normalize_text(line)
+        if "$" in normalized_line or "EUR" in normalized_line.upper():
+            return normalized_line[:255]
+
+    return None
+
+
+def _build_external_id(url: str) -> str:
+    return hashlib.sha1(url.encode("utf-8")).hexdigest()[:40]
+
+
+def _unique_urls(urls: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+
+    for url in urls:
+        normalized_url = url.split("#", 1)[0]
+        if normalized_url in seen:
+            continue
+        seen.add(normalized_url)
+        result.append(normalized_url)
+
+    return result

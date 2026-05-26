@@ -1,0 +1,63 @@
+
+
+Project overview:
+
+Group107 is building a dedicated AI Unit to drive automation across the company and deliver AI-powered solutions for client projects.
+
+We are hiring Junior AI Developers who think fast, learn faster, and are already productive with modern AI-assisted development workflows.
+
+You will work directly under the Tech Director and grow into autonomous AI engineers capable of owning full delivery pipelines.
+
+Requirements:
+
+    1+ year of hands-on software development experience (commercial or substantial personal projects)
+    Demonstrable proficiency with AI coding tools: Claude Code, Cursor, GitHub Copilot, or equivalent
+    Working knowledge of at least one: TypeScript/JavaScript or Python
+    Experience deploying web applications (Vercel, Netlify, or similar)
+    Understanding of LLM fundamentals: prompting, context windows, token management, tool use
+    Ability to read, debug, and refactor AI-generated code critically — not just accept output blindly
+    Git proficiency and basic CI/CD awareness
+    Strong English communication (both written and spoken)
+     
+
+Nice to have:
+
+    Experience with v0, Bolt, Lovable, Replit Agent, or similar AI app builders
+    Familiarity with MCP (Model Context Protocol) and agentic AI patterns
+    Contributions to open-source AI tools or published AI-related content
+    Experience with RAG pipelines, vector databases, or embeddings
+    Backend experience with Node.js, Next.js, or FastAPI
+    Understanding of DevOps basics: Docker, serverless functions, edge computing
+     
+
+Responsibilities:
+
+    Build internal automation tools and workflows using AI coding assistants (Claude Code, Cursor, Copilot)
+    Develop and ship AI-powered features and full applications for client projects
+    Prototype rapidly using vibe-coding methodology — prompt-driven development with AI pair-programming
+    Integrate LLM APIs (Anthropic, OpenAI, open-source models) into production systems
+    Deploy and maintain applications on modern platforms (Vercel, Cloudflare, AWS)
+    Create and manage AI agents, MCP servers, and tool-use pipelines
+    Evaluate, benchmark, and select AI models and tools for specific use cases
+    Document solutions, write technical specs, and contribute to the internal knowledge base
+
+    We offer:
+    20 vacation days (workdays)
+    7 sick days
+    Personalized career growth
+    Education reimbursement
+    Corporate events and team buildings
+    Equipment provided
+
+Вимоги до володіння мовами
+Англійська 	B2 – Вище середнього
+Українська 	Носій мови
+Про компанію GROUP 107
+
+Group 107 is the leading tech hub in Ukraine where startups and great projects evolve with the help of innovative technologies, intelligence and a can-do professional attitude combined with true passion to get the job done.
+
+Our mission is to provide the most innovative and collaborative environment for development, engagement and extended professional growth. Getting excited about the projects, our people enjoy the process and make the most of what they do. It allows us to provide complex A-Z premium offshore services based on strong professional ethics. Our main vision and goal is to create a new standard of premium offshore IT services in Ukraine.
+
+
+Сайт компанії:
+https://group107.com/

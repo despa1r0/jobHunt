@@ -16,7 +16,25 @@
 - Telegram bot supports basic commands:
   - `/start`
   - `/count`
+  - `/active`
   - `/next`
+  - `/filters`
+  - `/set_keywords`
+  - `/set_experience`
+  - `/set_english`
+  - `/set_location`
+  - `/include`
+  - `/exclude`
+  - `/scrape`
+  - `/new`
+  - `/reset_seen`
+- Telegram vacancy messages support inline navigation buttons:
+  - `Prev`
+  - `Next`
+  - `Not interested`
+- Telegram vacancy messages keep Djinni link preview enabled.
+- Vacancy details are grouped by recognized section headings.
+- Section heading recognition supports English, Ukrainian, and Russian.
 - Vacancy text is cleaned before Telegram output.
 - Telegram output is formatted as a readable vacancy card.
 - Manual test runners are moved to `manual/`.
@@ -30,6 +48,7 @@
 - `app/scrapers/djinni.py` - current Djinni scraper.
 - `app/scrapers/registry.py` - scraper registry by source name.
 - `app/telegram.py` - Telegram API wrapper.
+- `app/bot.py` - Telegram bot command handling.
 - `app/main.py` - FastAPI entry point, currently minimal.
 - `manual/run_scraper.py` - manual Djinni scraper run.
 - `manual/run_bot_test.py` - temporary Telegram bot polling run.
@@ -53,88 +72,38 @@
 - Moved Djinni scraper from `app/scraper.py` to `app/scrapers/djinni.py`.
 - Added scraper registry in `app/scrapers/registry.py`.
 
+## Implementation Done From Plan
+
+- Added filter model.
+- Added bot state model.
+- Added sent vacancy tracking model.
+- Moved bot logic from `manual/run_bot_test.py` into `app/bot.py`.
+- Added basic bot filter commands.
+- Added Djinni URL builder from saved filters.
+- Added `/new` command for unsent matching vacancies.
+- Added inline vacancy navigation buttons.
+- Added "not interested" action for the active vacancy list.
+- Added `/active` and `/reset_seen` commands.
+- Restored Telegram link preview for vacancy messages.
+- Added multilingual section heading detection for vacancy details.
+
 ## Next Implementation Steps
 
-1. Add filter model.
+1. Split long vacancy details into section-based views.
 
-   Required filter fields:
-   - source
-   - search keywords
-   - experience level
-   - English level
-   - location or remote mode
-   - include keywords
-   - exclude keywords
+    Target behavior:
+    - first message stays compact
+    - buttons can open sections like `Requirements`, `Responsibilities`, `Nice to have`, `Offer`
+    - each section can be shown separately to avoid Telegram message length limits
 
-2. Make Djinni scraper build search URL from filters.
-
-   Current behavior:
-   - hardcoded full `DJINNI_URL` in `.env`
-
-   Target behavior:
-   - bot/database stores filters
-   - scraper builds Djinni URL from those filters
-   - scraper saves all matching vacancies
-
-3. Move bot logic from `manual/run_bot_test.py` into `app/bot.py`.
-
-   `manual/run_bot_test.py` should only start the bot.
-
-4. Add bot commands for filters.
-
-   Minimum commands:
-   - `/start`
-   - `/count`
-   - `/next`
-   - `/filters`
-   - `/set_keywords`
-   - `/set_experience`
-   - `/set_english`
-   - `/set_location`
-   - `/scrape`
-
-5. Add bot state persistence.
-
-   Required table:
-   - `bot_states`
-
-   Required fields:
-   - `chat_id`
-   - `current_offset`
-   - `selected_source`
-   - `created_at`
-   - `updated_at`
-
-6. Track sent vacancies.
-
-   Required table:
-   - `sent_vacancies`
-
-   Required fields:
-   - `chat_id`
-   - `vacancy_id`
-   - `sent_at`
-
-   Purpose:
-   - avoid sending the same vacancy multiple times
-   - allow `/new` command later
-
-7. Add `/new` command.
-
-   Behavior:
-   - find saved vacancies matching current filters
-   - exclude vacancies already sent to this chat
-   - send all new vacancies
-   - mark sent vacancies in database
-
-8. Add automatic worker loop.
+2. Add automatic worker loop.
 
     Behavior:
     - periodically run scraper with saved filters
     - save new and updated vacancies
     - send new matching vacancies through Telegram
 
-9. Add Alembic migrations.
+3. Add Alembic migrations.
 
     Needed before adding more tables:
     - `vacancies`
@@ -142,7 +111,7 @@
     - `sent_vacancies`
     - filter table
 
-10. Expand FastAPI after bot flow is stable.
+4. Expand FastAPI after bot flow is stable.
 
     Minimum endpoints:
     - `GET /health`
@@ -151,14 +120,14 @@
     - `POST /scrape`
     - `GET /filters`
 
-11. Add Docker setup.
+5. Add Docker setup.
 
     Required services:
     - app
     - postgres
     - bot worker
 
-12. Deploy to VPS.
+6. Deploy to VPS.
 
     Required:
     - `.env` on server
@@ -180,9 +149,6 @@
 
 Build a clean Djinni-only MVP:
 
-- implement filters
-- move bot logic into `app/bot.py`
-- add persistent bot state
-- add sent vacancy tracking
-- add `/new`
+- split long vacancy details into section-based views
 - add automatic scraping loop
+- add Alembic migrations before more DB changes

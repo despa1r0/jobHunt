@@ -37,3 +37,33 @@ Run test Telegram bot:
 ```powershell
 .venv\Scripts\python.exe manual\run_bot_test.py
 ```
+
+Useful bot commands:
+
+```text
+/start
+/count
+/active
+/next
+/new
+/reset_seen
+/filters
+/set_keywords Python FastAPI
+/set_experience no_exp,1y
+/set_english pre,intermediate,upper
+/set_location remote
+/include python fastapi
+/exclude senior lead
+/scrape
+```
+
+Vacancy messages include inline buttons:
+
+```text
+Prev
+Next
+Not interested
+```
+
+`Not interested` removes the vacancy from the active list for the current chat.
+Use `/reset_seen` if old vacancies disappeared from the active list and should be shown again.

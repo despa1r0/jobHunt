@@ -12,8 +12,15 @@ settings = get_settings()
 
 engine = create_engine(settings.database_url, echo=settings.debug, future=True)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+    expire_on_commit=False,
+)
 
 
 def create_tables() -> None:
+    import app.models  # noqa: F401
+
     Base.metadata.create_all(bind=engine)

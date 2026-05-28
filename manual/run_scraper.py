@@ -9,7 +9,7 @@ from app.flow import scrape_and_save_djinni
 
 
 def main() -> None:
-    vacancies = scrape_and_save_djinni()
+    vacancies = scrape_and_save_djinni(pause_before_close=True)
 
     print(f"Saved vacancies: {len(vacancies)}")
     for vacancy in vacancies:

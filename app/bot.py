@@ -1,0 +1,312 @@
+from app.db import SessionLocal, create_tables
+from app.flow import scrape_and_save
+from app.models import (
+    clear_sent_vacancies,
+    count_vacancies,
+    format_vacancy_filter,
+    get_active_vacancies,
+    get_or_create_bot_state,
+    get_or_create_vacancy_filter,
+    mark_vacancy_sent,
+    update_bot_offset,
+    update_vacancy_filter,
+)
+from app.telegram import (
+    get_telegram_updates,
+    send_telegram_message,
+    try_answer_callback_query,
+    try_edit_telegram_message,
+)
+
+
+WELCOME_TEXT = (
+    "Vacancy bot is running.\n"
+    "Commands:\n"
+    "/count - show saved vacancies count\n"
+    "/active - show active vacancies count\n"
+    "/next - show active vacancy with navigation buttons\n"
+    "/new - show new vacancies matching your filters\n"
+    "/reset_seen - return hidden/seen vacancies to active list\n"
+    "/filters - show current filters\n"
+    "/set_keywords Python\n"
+    "/set_experience no_exp,1y\n"
+    "/set_english pre,intermediate,upper\n"
+    "/set_location remote\n"
+    "/include python fastapi\n"
+    "/exclude senior lead\n"
+    "/scrape - scrape Djinni with current filters"
+)
+
+
+def run_bot_polling() -> None:
+    create_tables()
+    next_update_id: int | None = None
+
+    print("Bot polling started. Press Ctrl+C to stop.")
+
+    while True:
+        updates = get_telegram_updates(offset=next_update_id, timeout=20)
+
+        for update in updates:
+            next_update_id = update["update_id"] + 1
+            callback_query = update.get("callback_query")
+            if callback_query:
+                handle_callback_query(callback_query)
+                continue
+
+            message = update.get("message")
+            if not message:
+                continue
+
+            chat_id = str(message["chat"]["id"])
+            text = (message.get("text") or "").strip()
+            response = handle_bot_command(chat_id=chat_id, text=text)
+
+            if response:
+                if isinstance(response, BotMessage):
+                    send_telegram_message(
+                        response.text,
+                        chat_id=chat_id,
+                        reply_markup=response.reply_markup,
+                        parse_mode=response.parse_mode,
+                        disable_web_page_preview=response.disable_web_page_preview,
+                    )
+                else:
+                    send_telegram_message(response, chat_id=chat_id)
+
+
+class BotMessage:
+    def __init__(
+        self,
+        text: str,
+        reply_markup: dict | None = None,
+        parse_mode: str | None = None,
+        disable_web_page_preview: bool = False,
+    ) -> None:
+        self.text = text
+        self.reply_markup = reply_markup
+        self.parse_mode = parse_mode
+        self.disable_web_page_preview = disable_web_page_preview
+
+
+def handle_bot_command(chat_id: str, text: str) -> str | BotMessage | None:
+    if text == "/start":
+        with SessionLocal() as db:
+            get_or_create_bot_state(db, chat_id)
+            get_or_create_vacancy_filter(db, chat_id)
+        return WELCOME_TEXT
+
+    if text == "/count":
+        with SessionLocal() as db:
+            total = count_vacancies(db)
+        return f"Saved vacancies: {total}"
+
+    if text == "/active":
+        return _handle_active_count(chat_id)
+
+    if text == "/next":
+        return _handle_next(chat_id)
+
+    if text == "/new":
+        return _handle_new(chat_id)
+
+    if text == "/filters":
+        with SessionLocal() as db:
+            vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
+            return format_vacancy_filter(vacancy_filter)
+
+    if text == "/scrape":
+        return _handle_scrape(chat_id)
+
+    if text == "/reset_seen":
+        return _handle_reset_seen(chat_id)
+
+    if text.startswith("/set_keywords"):
+        return _handle_filter_update(chat_id, text, "search_keywords")
+
+    if text.startswith("/set_experience"):
+        return _handle_filter_update(chat_id, text, "experience_levels")
+
+    if text.startswith("/set_english"):
+        return _handle_filter_update(chat_id, text, "english_levels")
+
+    if text.startswith("/set_location"):
+        return _handle_filter_update(chat_id, text, "location")
+
+    if text.startswith("/include"):
+        return _handle_filter_update(chat_id, text, "include_keywords")
+
+    if text.startswith("/exclude"):
+        return _handle_filter_update(chat_id, text, "exclude_keywords")
+
+    return "Unknown command. Use /start to see available commands."
+
+
+def _handle_next(chat_id: str) -> str:
+    message = _build_active_vacancy_message(chat_id=chat_id, offset_delta=0)
+    if message:
+        return message
+    return "No active vacancies for current filters. Run /scrape or adjust /filters."
+
+
+def _build_active_vacancy_message(
+    chat_id: str,
+    offset_delta: int = 0,
+) -> BotMessage | None:
+    with SessionLocal() as db:
+        state = get_or_create_bot_state(db, chat_id)
+        vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
+        active_vacancies = get_active_vacancies(db, chat_id, vacancy_filter)
+        total = len(active_vacancies)
+
+        if total == 0:
+            update_bot_offset(db, chat_id, 0)
+            return None
+
+        current_offset = state.current_offset + offset_delta
+        if current_offset < 0:
+            current_offset = total - 1
+        if current_offset >= total:
+            current_offset = 0
+
+        vacancy = active_vacancies[current_offset]
+        update_bot_offset(db, chat_id, current_offset)
+        text = f"{vacancy.as_telegram_html()}\n\n[{current_offset + 1}/{total}]"
+
+    return BotMessage(
+        text=text,
+        reply_markup=_vacancy_keyboard(vacancy.id),
+        parse_mode="HTML",
+        disable_web_page_preview=False,
+    )
+
+
+def _handle_new(chat_id: str) -> str | BotMessage | None:
+    with SessionLocal() as db:
+        update_bot_offset(db, chat_id, 0)
+
+    message = _build_active_vacancy_message(chat_id=chat_id, offset_delta=0)
+    if message:
+        return message
+    return "No new vacancies for current filters."
+
+
+def _handle_scrape(chat_id: str) -> str:
+    with SessionLocal() as db:
+        vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
+        filters = vacancy_filter.to_scrape_filters()
+
+    vacancies = scrape_and_save(source=filters.source, filters=filters)
+    return f"Scraped and saved vacancies: {len(vacancies)}"
+
+
+def _handle_active_count(chat_id: str) -> str:
+    with SessionLocal() as db:
+        vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
+        active_total = len(get_active_vacancies(db, chat_id, vacancy_filter))
+        saved_total = count_vacancies(db)
+
+    return (
+        f"Active vacancies: {active_total}\n"
+        f"Saved vacancies: {saved_total}\n"
+        "Active excludes vacancies marked as not interesting or previously hidden."
+    )
+
+
+def _handle_reset_seen(chat_id: str) -> str:
+    with SessionLocal() as db:
+        removed = clear_sent_vacancies(db, chat_id)
+        update_bot_offset(db, chat_id, 0)
+
+    return f"Returned hidden/seen vacancies to active list: {removed}"
+
+
+def _handle_filter_update(chat_id: str, text: str, field_name: str) -> str:
+    _, _, raw_value = text.partition(" ")
+    value = raw_value.strip() or None
+
+    if value is None:
+        return "Value is empty. Example: /set_keywords Python"
+
+    with SessionLocal() as db:
+        vacancy_filter = update_vacancy_filter(db, chat_id, **{field_name: value})
+        return "Filters updated:\n" + format_vacancy_filter(vacancy_filter)
+
+
+def handle_callback_query(callback_query: dict) -> None:
+    callback_query_id = callback_query["id"]
+    data = callback_query.get("data") or ""
+    message = callback_query.get("message") or {}
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    message_id = message.get("message_id")
+
+    if not chat_id or message_id is None:
+        try_answer_callback_query(callback_query_id)
+        return
+
+    if data == "vacancy:next":
+        bot_message = _build_active_vacancy_message(chat_id=chat_id, offset_delta=1)
+        if bot_message:
+            try_edit_telegram_message(
+                chat_id,
+                message_id,
+                bot_message.text,
+                reply_markup=bot_message.reply_markup,
+                parse_mode=bot_message.parse_mode,
+                disable_web_page_preview=bot_message.disable_web_page_preview,
+            )
+        try_answer_callback_query(callback_query_id)
+        return
+
+    if data == "vacancy:prev":
+        bot_message = _build_active_vacancy_message(chat_id=chat_id, offset_delta=-1)
+        if bot_message:
+            try_edit_telegram_message(
+                chat_id,
+                message_id,
+                bot_message.text,
+                reply_markup=bot_message.reply_markup,
+                parse_mode=bot_message.parse_mode,
+                disable_web_page_preview=bot_message.disable_web_page_preview,
+            )
+        try_answer_callback_query(callback_query_id)
+        return
+
+    if data.startswith("vacancy:skip:"):
+        vacancy_id = int(data.rsplit(":", 1)[1])
+        with SessionLocal() as db:
+            mark_vacancy_sent(db, chat_id, vacancy_id)
+
+        bot_message = _build_active_vacancy_message(chat_id=chat_id, offset_delta=0)
+        if bot_message:
+            try_edit_telegram_message(
+                chat_id,
+                message_id,
+                bot_message.text,
+                reply_markup=bot_message.reply_markup,
+                parse_mode=bot_message.parse_mode,
+                disable_web_page_preview=bot_message.disable_web_page_preview,
+            )
+        else:
+            try_edit_telegram_message(chat_id, message_id, "No active vacancies left.")
+        try_answer_callback_query(callback_query_id, text="Marked as not interesting")
+        return
+
+    try_answer_callback_query(callback_query_id)
+
+
+def _vacancy_keyboard(vacancy_id: int) -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Prev", "callback_data": "vacancy:prev"},
+                {"text": "Next", "callback_data": "vacancy:next"},
+            ],
+            [
+                {
+                    "text": "Not interested",
+                    "callback_data": f"vacancy:skip:{vacancy_id}",
+                }
+            ],
+        ]
+    }

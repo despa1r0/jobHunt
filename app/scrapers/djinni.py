@@ -1,14 +1,19 @@
 import hashlib
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 from app.config import get_settings
-from app.models import VacancyCreate
+from app.models import ScrapeFilters, VacancyCreate
 
 
-def scrape_djinni_jobs(limit: int | None = None) -> list[VacancyCreate]:
+def scrape_djinni_jobs(
+    filters: ScrapeFilters | None = None,
+    limit: int | None = None,
+    pause_before_close: bool = False,
+) -> list[VacancyCreate]:
     settings = get_settings()
+    search_url = _build_djinni_search_url(filters) if filters else settings.djinni_url
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -18,7 +23,7 @@ def scrape_djinni_jobs(limit: int | None = None) -> list[VacancyCreate]:
         page = browser.new_page(viewport={"width": 1400, "height": 900})
 
         try:
-            page.goto(settings.djinni_url, wait_until="domcontentloaded", timeout=60000)
+            page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
 
             try:
                 page.wait_for_selector("[id^='job-item-']", timeout=10000)
@@ -42,7 +47,7 @@ def scrape_djinni_jobs(limit: int | None = None) -> list[VacancyCreate]:
 
             return vacancies
         finally:
-            if not settings.scraper_headless:
+            if pause_before_close and not settings.scraper_headless:
                 input("Press Enter to close browser...")
             browser.close()
 
@@ -76,6 +81,31 @@ def _collect_djinni_job_urls(page: Page, limit: int | None) -> list[str]:
     if limit is None:
         return unique_urls
     return unique_urls[:limit]
+
+
+def _build_djinni_search_url(filters: ScrapeFilters) -> str:
+    params: list[tuple[str, str]] = [
+        ("search_type", "basic-search"),
+        ("primary_keyword", filters.search_keywords),
+    ]
+
+    for exp_level in _split_filter_value(filters.experience_levels):
+        params.append(("exp_level", exp_level))
+
+    for english_level in _split_filter_value(filters.english_levels):
+        params.append(("english_level", english_level))
+
+    return f"https://djinni.co/jobs/?{urlencode(params)}"
+
+
+def _split_filter_value(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [
+        item.strip()
+        for item in value.replace(",", " ").split()
+        if item.strip()
+    ]
 
 
 def _parse_djinni_detail_page(page: Page, url: str) -> VacancyCreate:
@@ -131,7 +161,6 @@ def _clean_description_text(text: str) -> str:
         "Sign Up",
         "All jobs",
         "Development",
-        "Python",
         "Apply for the job",
     }
 

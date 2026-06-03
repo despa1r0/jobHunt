@@ -1,5 +1,6 @@
 .env
 .venv/
+PROJECT_PLAN.md
 __pycache__/
 *.pyc
 playwright-report/

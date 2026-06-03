@@ -7,6 +7,7 @@ from app.models import (
     get_active_vacancies,
     get_or_create_bot_state,
     get_or_create_vacancy_filter,
+    get_vacancy_by_id,
     mark_vacancy_sent,
     update_bot_offset,
     update_vacancy_filter,
@@ -142,7 +143,7 @@ def handle_bot_command(chat_id: str, text: str) -> str | BotMessage | None:
     return "Unknown command. Use /start to see available commands."
 
 
-def _handle_next(chat_id: str) -> str:
+def _handle_next(chat_id: str) -> str | BotMessage:
     message = _build_active_vacancy_message(chat_id=chat_id, offset_delta=0)
     if message:
         return message
@@ -171,11 +172,22 @@ def _build_active_vacancy_message(
 
         vacancy = active_vacancies[current_offset]
         update_bot_offset(db, chat_id, current_offset)
-        text = f"{vacancy.as_telegram_html()}\n\n[{current_offset + 1}/{total}]"
+        pages = vacancy.telegram_html_pages()
+        text = _format_vacancy_text(
+            pages[0],
+            vacancy_position=current_offset + 1,
+            vacancy_total=total,
+            details_page=0,
+            details_total=len(pages),
+        )
 
     return BotMessage(
         text=text,
-        reply_markup=_vacancy_keyboard(vacancy.id),
+        reply_markup=_vacancy_keyboard(
+            vacancy.id,
+            details_page=0,
+            details_total=len(pages),
+        ),
         parse_mode="HTML",
         disable_web_page_preview=False,
     )
@@ -292,21 +304,162 @@ def handle_callback_query(callback_query: dict) -> None:
         try_answer_callback_query(callback_query_id, text="Marked as not interesting")
         return
 
+    if data.startswith("vacancy:details:"):
+        parsed = _parse_vacancy_details_callback(data)
+        if parsed is None:
+            try_answer_callback_query(callback_query_id)
+            return
+
+        vacancy_id, details_page = parsed
+        bot_message = _build_vacancy_details_message(
+            chat_id=chat_id,
+            vacancy_id=vacancy_id,
+            details_page=details_page,
+        )
+        if bot_message:
+            try_edit_telegram_message(
+                chat_id,
+                message_id,
+                bot_message.text,
+                reply_markup=bot_message.reply_markup,
+                parse_mode=bot_message.parse_mode,
+                disable_web_page_preview=bot_message.disable_web_page_preview,
+            )
+        try_answer_callback_query(callback_query_id)
+        return
+
     try_answer_callback_query(callback_query_id)
 
 
-def _vacancy_keyboard(vacancy_id: int) -> dict:
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "Prev", "callback_data": "vacancy:prev"},
-                {"text": "Next", "callback_data": "vacancy:next"},
-            ],
-            [
+def _build_vacancy_details_message(
+    chat_id: str,
+    vacancy_id: int,
+    details_page: int,
+) -> BotMessage | None:
+    with SessionLocal() as db:
+        vacancy = get_vacancy_by_id(db, vacancy_id)
+        if vacancy is None:
+            return None
+
+        pages = vacancy.telegram_html_pages()
+        if not pages:
+            return None
+
+        details_page = _clamp(details_page, minimum=0, maximum=len(pages) - 1)
+        vacancy_position, vacancy_total = _get_vacancy_position(db, chat_id, vacancy_id)
+        text = _format_vacancy_text(
+            pages[details_page],
+            vacancy_position=vacancy_position,
+            vacancy_total=vacancy_total,
+            details_page=details_page,
+            details_total=len(pages),
+        )
+
+    return BotMessage(
+        text=text,
+        reply_markup=_vacancy_keyboard(
+            vacancy_id,
+            details_page=details_page,
+            details_total=len(pages),
+        ),
+        parse_mode="HTML",
+        disable_web_page_preview=False,
+    )
+
+
+def _parse_vacancy_details_callback(data: str) -> tuple[int, int] | None:
+    parts = data.split(":")
+    if len(parts) != 4:
+        return None
+
+    _, _, vacancy_id, details_page = parts
+    try:
+        return int(vacancy_id), int(details_page)
+    except ValueError:
+        return None
+
+
+def _get_vacancy_position(
+    db,
+    chat_id: str,
+    vacancy_id: int,
+) -> tuple[int | None, int | None]:
+    vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
+    active_vacancies = get_active_vacancies(db, chat_id, vacancy_filter)
+    vacancy_total = len(active_vacancies)
+
+    for index, vacancy in enumerate(active_vacancies):
+        if vacancy.id == vacancy_id:
+            return index + 1, vacancy_total
+
+    return None, vacancy_total
+
+
+def _format_vacancy_text(
+    page_text: str,
+    vacancy_position: int | None,
+    vacancy_total: int | None,
+    details_page: int,
+    details_total: int,
+) -> str:
+    counters: list[str] = []
+    if vacancy_position is not None and vacancy_total is not None:
+        counters.append(f"{vacancy_position}/{vacancy_total}")
+    if details_total > 1:
+        counters.append(f"details {details_page + 1}/{details_total}")
+    if not counters:
+        return page_text
+
+    return f"{page_text}\n\n[{' | '.join(counters)}]"
+
+
+def _vacancy_keyboard(
+    vacancy_id: int,
+    details_page: int = 0,
+    details_total: int = 1,
+) -> dict:
+    inline_keyboard = [
+        [
+            {"text": "Prev", "callback_data": "vacancy:prev"},
+            {"text": "Next", "callback_data": "vacancy:next"},
+        ],
+    ]
+
+    if details_total > 1:
+        detail_buttons = []
+        if details_page > 0:
+            detail_buttons.append(
                 {
-                    "text": "Not interested",
-                    "callback_data": f"vacancy:skip:{vacancy_id}",
+                    "text": "Details prev",
+                    "callback_data": f"vacancy:details:{vacancy_id}:{details_page - 1}",
                 }
-            ],
+            )
+        if details_page < details_total - 1:
+            detail_buttons.append(
+                {
+                    "text": "Details next",
+                    "callback_data": f"vacancy:details:{vacancy_id}:{details_page + 1}",
+                }
+            )
+        inline_keyboard.append(detail_buttons)
+
+    inline_keyboard.append(
+        [
+            {
+                "text": "Not interested",
+                "callback_data": f"vacancy:skip:{vacancy_id}",
+            }
         ]
+    )
+
+    return {
+        "inline_keyboard": inline_keyboard,
     }
+
+
+def _clamp(value: int, minimum: int, maximum: int) -> int:
+    if value < minimum:
+        return minimum
+    if value > maximum:
+        return maximum
+    return value

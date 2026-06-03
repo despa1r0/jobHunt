@@ -11,7 +11,7 @@ class Settings:
     def __init__(self) -> None:
         self.app_name = os.getenv("APP_NAME", "jobHunt")
         self.app_env = os.getenv("APP_ENV", "dev")
-        self.debug = os.getenv("DEBUG", "false").lower() == "true"
+        self.debug = _env_bool("DEBUG", default=False)
 
         self.postgres_user = os.getenv("POSTGRES_USER", "postgres")
         self.postgres_password = os.getenv("POSTGRES_PASSWORD", "postgres")
@@ -20,7 +20,19 @@ class Settings:
         self.postgres_db = os.getenv("POSTGRES_DB", "jobhunt")
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-        self.scraper_headless = os.getenv("SCRAPER_HEADLESS", "false").lower() == "true"
+        self.scraper_headless = _env_bool(
+            "SCRAPER_HEADLESS",
+            default=self.app_env.lower() in {"docker", "prod", "production"},
+        )
+        self.scraper_navigation_timeout_ms = _env_int(
+            "SCRAPER_NAVIGATION_TIMEOUT_MS",
+            default=60000,
+        )
+        self.scraper_selector_timeout_ms = _env_int(
+            "SCRAPER_SELECTOR_TIMEOUT_MS",
+            default=10000,
+        )
+        self.scraper_retry_count = _env_int("SCRAPER_RETRY_COUNT", default=2)
         self.djinni_url = os.getenv(
             "DJINNI_URL",
             "https://djinni.co/jobs/?primary_keyword=Python&exp_level=no_exp",
@@ -37,3 +49,20 @@ class Settings:
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default

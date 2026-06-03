@@ -1,0 +1,8 @@
+.env
+.git
+.venv
+PROJECT_PLAN.md
+__pycache__
+*.pyc
+playwright-report
+test-results

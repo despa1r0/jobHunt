@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 
@@ -6,6 +7,31 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstr
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.db import Base
+
+
+@dataclass(frozen=True)
+class VacancySection:
+    title: str
+    lines: list[str]
+
+    def as_blockquote_html(self, body: str) -> str:
+        if self.title == "About":
+            return f"<blockquote expandable>{escape(body)}</blockquote>"
+
+        return (
+            f"<b>{escape(self.title)}:</b>\n"
+            f"<blockquote expandable>{escape(body)}</blockquote>"
+        )
+
+    def as_blockquote_chunks(self, max_body_chars: int) -> list[str]:
+        body = "\n".join(self.lines).strip()
+        if not body:
+            return []
+
+        return [
+            self.as_blockquote_html(chunk)
+            for chunk in _split_text_chunks(body, max_body_chars)
+        ]
 
 
 class VacancyCreate(BaseModel):
@@ -50,34 +76,39 @@ class Vacancy(Base):
         onupdate=func.now(),
     )
 
-    def as_telegram_message(self) -> str:
-        parts = [self.title]
+    def as_telegram_html(self, details_page: int = 0) -> str:
+        pages = self.telegram_html_pages()
+        if not pages:
+            return ""
+        if details_page < 0:
+            details_page = 0
+        if details_page >= len(pages):
+            details_page = len(pages) - 1
 
-        if self.company_name:
-            parts.append(f"Company: {self.company_name}")
-        if self.salary:
-            parts.append(f"Salary: {self.salary}")
-        if self.location:
-            parts.append(f"Location: {self.location}")
+        return pages[details_page]
 
-        description = _format_description(
+    def telegram_html_pages(self, max_chars: int = 3900) -> list[str]:
+        parts = self._telegram_header_parts()
+
+        parts.append("")
+        parts.append(f"Link: {escape(self.url)}")
+
+        sections = self.telegram_sections()
+        if not sections:
+            return ["\n".join(parts)]
+
+        return _format_vacancy_pages(parts, sections, max_chars=max_chars)
+
+    def telegram_sections(self) -> list[VacancySection]:
+        return _split_description_sections(
             self.description,
             title=self.title,
             company_name=self.company_name,
             salary=self.salary,
             location=self.location,
         )
-        if description:
-            parts.append("")
-            parts.append("About:")
-            parts.append(description)
 
-        parts.append("")
-        parts.append(f"Link: {self.url}")
-
-        return "\n".join(parts)
-
-    def as_telegram_html(self) -> str:
+    def _telegram_header_parts(self) -> list[str]:
         parts = [f"<b>{escape(self.title)}</b>"]
 
         if self.company_name:
@@ -86,23 +117,7 @@ class Vacancy(Base):
             parts.append(f"<b>Salary:</b> {escape(self.salary)}")
         if self.location:
             parts.append(f"<b>Location:</b> {escape(self.location)}")
-
-        details = _format_description_html(
-            self.description,
-            title=self.title,
-            company_name=self.company_name,
-            salary=self.salary,
-            location=self.location,
-        )
-        if details:
-            parts.append("")
-            parts.append("<b>Details:</b>")
-            parts.append(f"<blockquote expandable>{details}</blockquote>")
-
-        parts.append("")
-        parts.append(f"Link: {escape(self.url)}")
-
-        return "\n".join(parts)
+        return parts
 
 
 class BotState(Base):
@@ -195,6 +210,11 @@ def save_vacancies(db: Session, payloads: list[VacancyCreate]) -> list[Vacancy]:
 def get_latest_vacancy(db: Session) -> Vacancy | None:
     statement = select(Vacancy).order_by(Vacancy.id.desc()).limit(1)
     return db.execute(statement).scalars().first()
+
+
+def get_vacancy_by_id(db: Session, vacancy_id: int) -> Vacancy | None:
+    statement = select(Vacancy).where(Vacancy.id == vacancy_id)
+    return db.execute(statement).scalar_one_or_none()
 
 
 def count_vacancies(db: Session) -> int:
@@ -370,75 +390,13 @@ def _split_filter_values(value: str | None) -> list[str]:
     ]
 
 
-def _format_description(
+def _split_description_sections(
     description: str | None,
-    max_lines: int = 12,
-    max_chars: int = 1800,
     title: str | None = None,
     company_name: str | None = None,
     salary: str | None = None,
     location: str | None = None,
-) -> str:
-    if not description:
-        return ""
-
-    ignored_lines = {
-        "Djinni",
-        "Candidates",
-        "Jobs",
-        "Salaries",
-        "Log In",
-        "Sign Up",
-        "All jobs",
-        "Development",
-        "Apply for the job",
-    }
-
-    cleaned_lines: list[str] = []
-    for raw_line in description.splitlines():
-        line = raw_line.strip()
-        if not line or line in ignored_lines:
-            continue
-        if title and line == title:
-            continue
-        if company_name and line == company_name:
-            continue
-        if salary and line == salary:
-            continue
-        if location and line == location:
-            continue
-        if line.startswith("Unknown command."):
-            continue
-        if line.startswith("Response activity:"):
-            continue
-        if line.startswith("Last responded"):
-            continue
-        if line.startswith("Published ") or line.startswith("Updated "):
-            continue
-        if line.endswith(" views") or line.endswith(" applications"):
-            continue
-        cleaned_lines.append(line)
-
-    if not cleaned_lines:
-        return ""
-
-    short_lines = cleaned_lines[:max_lines]
-    result = "\n".join(f"- {line}" for line in short_lines)
-
-    if len(result) > max_chars:
-        return result[: max_chars - 3].rstrip() + "..."
-
-    return result
-
-
-def _format_description_html(
-    description: str | None,
-    max_chars: int = 3000,
-    title: str | None = None,
-    company_name: str | None = None,
-    salary: str | None = None,
-    location: str | None = None,
-) -> str:
+) -> list[VacancySection]:
     cleaned_lines = _clean_description_lines(
         description,
         title=title,
@@ -447,31 +405,109 @@ def _format_description_html(
         location=location,
     )
     if not cleaned_lines:
-        return ""
+        return []
 
-    html = _format_lines_as_sections(cleaned_lines)
-    if len(html) > max_chars:
-        html = html[: max_chars - 3].rstrip() + "..."
+    sections: list[VacancySection] = []
+    current_title = "About"
+    current_lines: list[str] = []
 
-    return html
-
-
-def _format_lines_as_sections(lines: list[str]) -> str:
-    formatted_lines: list[str] = []
-
-    for line in lines:
+    for line in cleaned_lines:
         normalized_line = line.rstrip(":").strip()
-        escaped_line = escape(line)
-
         if _looks_like_section_heading(normalized_line):
-            if formatted_lines:
-                formatted_lines.append("")
-            formatted_lines.append(f"<b>{escaped_line}</b>")
+            if current_lines:
+                sections.append(VacancySection(current_title, current_lines))
+            current_title = normalized_line
+            current_lines = []
             continue
 
-        formatted_lines.append(escaped_line)
+        current_lines.append(line)
 
-    return "\n".join(formatted_lines)
+    if current_lines:
+        sections.append(VacancySection(current_title, current_lines))
+
+    return sections
+
+
+def _format_vacancy_pages(
+    header_parts: list[str],
+    sections: list[VacancySection],
+    max_chars: int,
+) -> list[str]:
+    base_parts = [*header_parts, "", "<b>Details:</b>"]
+    base_text = "\n".join(base_parts)
+    max_block_body_chars = max(800, max_chars - len(base_text) - 250)
+    blocks = [
+        block
+        for section in sections
+        for block in section.as_blockquote_chunks(max_block_body_chars)
+    ]
+    if not blocks:
+        return ["\n".join(header_parts)]
+
+    pages: list[str] = []
+    current_parts = base_parts.copy()
+
+    for block in blocks:
+        candidate = "\n".join([*current_parts, block])
+        if len(candidate) > max_chars and len(current_parts) > len(base_parts):
+            pages.append("\n".join(current_parts))
+            current_parts = [*base_parts, block]
+            continue
+
+        current_parts.append(block)
+
+    if len(current_parts) > len(base_parts):
+        pages.append("\n".join(current_parts))
+
+    return pages
+
+
+def _split_text_chunks(text: str, max_chars: int) -> list[str]:
+    chunks: list[str] = []
+    current = ""
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        if len(line) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_long_line(line, max_chars))
+            continue
+
+        candidate = line if not current else f"{current}\n{line}"
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+
+        chunks.append(current)
+        current = line
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def _split_long_line(text: str, max_chars: int) -> list[str]:
+    chunks: list[str] = []
+    remaining = text.strip()
+
+    while len(remaining) > max_chars:
+        split_at = remaining.rfind(" ", 0, max_chars)
+        if split_at <= 0:
+            split_at = max_chars
+
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+
+    if remaining:
+        chunks.append(remaining)
+
+    return chunks
 
 
 def _looks_like_section_heading(line: str) -> bool:

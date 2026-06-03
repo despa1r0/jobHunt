@@ -1,10 +1,20 @@
 import hashlib
+import logging
+import time
 from urllib.parse import urlencode, urljoin
 
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+from playwright.sync_api import (
+    Error as PlaywrightError,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 
 from app.config import get_settings
 from app.models import ScrapeFilters, VacancyCreate
+
+
+logger = logging.getLogger(__name__)
 
 
 def scrape_djinni_jobs(
@@ -13,43 +23,126 @@ def scrape_djinni_jobs(
     pause_before_close: bool = False,
 ) -> list[VacancyCreate]:
     settings = get_settings()
+    _ensure_logging_configured()
     search_url = _build_djinni_search_url(filters) if filters else settings.djinni_url
+    logger.info(
+        "Djinni scrape started: url=%s headless=%s",
+        search_url,
+        settings.scraper_headless,
+    )
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            headless=settings.scraper_headless,
-            slow_mo=250,
-        )
-        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        browser = None
 
         try:
-            page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+            browser = playwright.chromium.launch(
+                headless=settings.scraper_headless,
+                slow_mo=0 if settings.scraper_headless else 250,
+            )
+            page = browser.new_page(viewport={"width": 1400, "height": 900})
+            page.set_default_timeout(settings.scraper_selector_timeout_ms)
+            page.set_default_navigation_timeout(settings.scraper_navigation_timeout_ms)
+
+            _goto_with_retries(
+                page,
+                search_url,
+                timeout_ms=settings.scraper_navigation_timeout_ms,
+                retries=settings.scraper_retry_count,
+            )
 
             try:
-                page.wait_for_selector("[id^='job-item-']", timeout=10000)
+                page.wait_for_selector(
+                    "[id^='job-item-']",
+                    timeout=settings.scraper_selector_timeout_ms,
+                )
             except PlaywrightTimeoutError:
-                print("No Djinni vacancy cards found for current filters.")
+                logger.info("No Djinni vacancy cards found for url=%s", search_url)
                 return []
 
             urls = _collect_djinni_job_urls(page, limit)
-            print(f"Found Djinni job links: {len(urls)}")
+            logger.info("Djinni job links found: count=%s url=%s", len(urls), search_url)
 
             vacancies: list[VacancyCreate] = []
             for index, url in enumerate(urls, start=1):
-                print(f"[{index}/{len(urls)}] Opening {url}")
+                logger.info(
+                    "Djinni vacancy open: index=%s total=%s url=%s",
+                    index,
+                    len(urls),
+                    url,
+                )
 
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                    page.wait_for_selector("h1", timeout=10000)
+                    _goto_with_retries(
+                        page,
+                        url,
+                        timeout_ms=settings.scraper_navigation_timeout_ms,
+                        retries=settings.scraper_retry_count,
+                    )
+                    page.wait_for_selector(
+                        "h1",
+                        timeout=settings.scraper_selector_timeout_ms,
+                    )
                     vacancies.append(_parse_djinni_detail_page(page, url))
-                except Exception as exc:
-                    print(f"Failed to parse Djinni vacancy {url}: {exc}")
+                except (PlaywrightError, ValueError) as exc:
+                    logger.exception(
+                        "Failed to parse Djinni vacancy: url=%s error=%s",
+                        url,
+                        exc,
+                    )
 
+            logger.info("Djinni scrape finished: parsed=%s url=%s", len(vacancies), search_url)
             return vacancies
         finally:
-            if pause_before_close and not settings.scraper_headless:
-                input("Press Enter to close browser...")
-            browser.close()
+            try:
+                if pause_before_close and not settings.scraper_headless:
+                    input("Press Enter to close browser...")
+            finally:
+                if browser is not None:
+                    browser.close()
+                    logger.info("Djinni browser closed")
+
+
+def _ensure_logging_configured() -> None:
+    if logging.getLogger().handlers:
+        return
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def _goto_with_retries(
+    page: Page,
+    url: str,
+    timeout_ms: int,
+    retries: int,
+) -> None:
+    attempts = max(1, retries + 1)
+
+    for attempt in range(1, attempts + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            return
+        except PlaywrightError as exc:
+            if attempt >= attempts:
+                logger.exception(
+                    "Page navigation failed after retries: url=%s attempts=%s",
+                    url,
+                    attempts,
+                )
+                raise
+
+            delay_seconds = min(2 * attempt, 10)
+            logger.warning(
+                "Page navigation failed, retrying: url=%s attempt=%s/%s delay=%ss error=%s",
+                url,
+                attempt,
+                attempts,
+                delay_seconds,
+                exc,
+            )
+            time.sleep(delay_seconds)
 
 
 def _collect_djinni_job_urls(page: Page, limit: int | None) -> list[str]:

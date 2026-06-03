@@ -6,7 +6,8 @@ Small job scraper project for collecting vacancies, saving them to Postgres, and
 
 - `manual/run_scraper.py` opens Djinni in Chromium with Playwright, parses visible vacancies, and saves them to Postgres.
 - `manual/run_bot_test.py` starts the temporary Telegram bot polling loop.
-- Browser is visible by default because `SCRAPER_HEADLESS=false`.
+- Browser is visible locally when `SCRAPER_HEADLESS=false`.
+- Docker/production-style runs can use `APP_ENV=docker` or `SCRAPER_HEADLESS=true`.
 
 ## Local setup
 
@@ -17,6 +18,10 @@ POSTGRES_PASSWORD=strongpass
 POSTGRES_DB=postgres
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
+SCRAPER_HEADLESS=false
+SCRAPER_NAVIGATION_TIMEOUT_MS=60000
+SCRAPER_SELECTOR_TIMEOUT_MS=10000
+SCRAPER_RETRY_COUNT=2
 ```
 
 Install dependencies:
@@ -36,6 +41,18 @@ Run test Telegram bot:
 
 ```powershell
 .venv\Scripts\python.exe manual\run_bot_test.py
+```
+
+Build the headless bot worker image:
+
+```powershell
+docker build -t jobhunt-bot .
+```
+
+Run the image with your environment file:
+
+```powershell
+docker run --env-file .env jobhunt-bot
 ```
 
 Useful bot commands:
@@ -62,8 +79,11 @@ Vacancy messages include inline buttons:
 ```text
 Prev
 Next
+Details prev
+Details next
 Not interested
 ```
 
 `Not interested` removes the vacancy from the active list for the current chat.
+`Details prev` and `Details next` appear only when vacancy details are longer than one Telegram message.
 Use `/reset_seen` if old vacancies disappeared from the active list and should be shown again.

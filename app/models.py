@@ -526,6 +526,20 @@ def _looks_like_section_heading(line: str) -> bool:
         "we offer",
         "about the role",
         "about you",
+        "zakres obowiązków",
+        "obowiązki",
+        "zadania",
+        "twoje zadania",
+        "twój zakres obowiązków",
+        "opis stanowiska",
+        "wymagania",
+        "oczekiwania",
+        "mile widziane",
+        "oferujemy",
+        "co oferujemy",
+        "benefity",
+        "nasze wymagania",
+        "what we expect",
         "вимоги",
         "обов'язки",
         "обовʼязки",
@@ -562,6 +576,20 @@ def _looks_like_section_heading(line: str) -> bool:
     if normalized.startswith("what you will"):
         return True
     if normalized.startswith("responsibilities"):
+        return True
+    if normalized.startswith("zakres obowiązków"):
+        return True
+    if normalized.startswith("twój zakres obowiązków"):
+        return True
+    if normalized.startswith("opis stanowiska"):
+        return True
+    if normalized.startswith("wymagania"):
+        return True
+    if normalized.startswith("oferujemy"):
+        return True
+    if normalized.startswith("mile widziane"):
+        return True
+    if normalized.startswith("benefity"):
         return True
     if normalized.startswith("вимоги"):
         return True

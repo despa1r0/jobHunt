@@ -4,10 +4,13 @@ Small job scraper project for collecting vacancies, saving them to Postgres, and
 
 ## Current flow
 
-- `manual/run_scraper.py` opens Djinni in Chromium with Playwright, parses visible vacancies, and saves them to Postgres.
+- `manual/run_scraper.py` opens a selected source in Chromium with Playwright, parses visible vacancies, and saves them to Postgres.
 - `manual/run_bot_test.py` starts the temporary Telegram bot polling loop.
 - Browser is visible locally when `SCRAPER_HEADLESS=false`.
 - Docker/production-style runs can use `APP_ENV=docker` or `SCRAPER_HEADLESS=true`.
+- Supported sources:
+  - `djinni`
+  - `praca_pl`
 
 ## Local setup
 
@@ -22,6 +25,8 @@ SCRAPER_HEADLESS=false
 SCRAPER_NAVIGATION_TIMEOUT_MS=60000
 SCRAPER_SELECTOR_TIMEOUT_MS=10000
 SCRAPER_RETRY_COUNT=2
+DJINNI_URL=https://djinni.co/jobs/?primary_keyword=Python&exp_level=no_exp
+PRACA_PL_URL=https://www.praca.pl/s-python.html
 ```
 
 Install dependencies:
@@ -31,10 +36,11 @@ Install dependencies:
 .venv\Scripts\python.exe -m playwright install chromium
 ```
 
-Run headed Djinni scraper:
+Run headed scraper:
 
 ```powershell
 .venv\Scripts\python.exe manual\run_scraper.py
+.venv\Scripts\python.exe manual\run_scraper.py praca_pl
 ```
 
 Run test Telegram bot:
@@ -55,6 +61,36 @@ Run the image with your environment file:
 docker run --env-file .env jobhunt-bot
 ```
 
+## VPS deployment with Docker Compose
+
+Copy the project to the server, create `.env` from `.env.example`, and set real values for:
+
+```env
+POSTGRES_PASSWORD=strongpass
+POSTGRES_DB=jobhunt
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+SCRAPER_HEADLESS=true
+```
+
+Start Postgres and the Telegram bot worker:
+
+```bash
+docker compose up -d --build postgres bot-worker
+```
+
+Optional API service:
+
+```bash
+docker compose --profile api up -d --build
+```
+
+Check logs:
+
+```bash
+docker compose logs -f bot-worker
+```
+
 Useful bot commands:
 
 ```text
@@ -71,6 +107,7 @@ Useful bot commands:
 /set_location remote
 /include python fastapi
 /exclude senior lead
+/set_source praca_pl
 /scrape
 ```
 

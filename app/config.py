@@ -37,6 +37,10 @@ class Settings:
             "DJINNI_URL",
             "https://djinni.co/jobs/?primary_keyword=Python&exp_level=no_exp",
         )
+        self.praca_pl_url = os.getenv(
+            "PRACA_PL_URL",
+            "https://www.praca.pl/s-python.html",
+        )
 
     @property
     def database_url(self) -> str:

@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-jobhunt}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bot-worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: docker
+      DEBUG: ${DEBUG:-false}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jobhunt}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      SCRAPER_HEADLESS: "true"
+      SCRAPER_NAVIGATION_TIMEOUT_MS: ${SCRAPER_NAVIGATION_TIMEOUT_MS:-60000}
+      SCRAPER_SELECTOR_TIMEOUT_MS: ${SCRAPER_SELECTOR_TIMEOUT_MS:-10000}
+      SCRAPER_RETRY_COUNT: ${SCRAPER_RETRY_COUNT:-2}
+      DJINNI_URL: ${DJINNI_URL:-https://djinni.co/jobs/?primary_keyword=Python&exp_level=no_exp}
+      PRACA_PL_URL: ${PRACA_PL_URL:-https://www.praca.pl/s-python.html}
+    command: ["python", "manual/run_bot_test.py"]
+
+  api:
+    build: .
+    restart: unless-stopped
+    profiles: ["api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: docker
+      DEBUG: ${DEBUG:-false}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jobhunt}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+volumes:
+  postgres_data:

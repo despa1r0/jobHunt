@@ -35,7 +35,8 @@ WELCOME_TEXT = (
     "/set_location remote\n"
     "/include python fastapi\n"
     "/exclude senior lead\n"
-    "/scrape - scrape Djinni with current filters"
+    "/set_source djinni|praca_pl\n"
+    "/scrape - scrape current source with current filters"
 )
 
 
@@ -140,6 +141,9 @@ def handle_bot_command(chat_id: str, text: str) -> str | BotMessage | None:
     if text.startswith("/exclude"):
         return _handle_filter_update(chat_id, text, "exclude_keywords")
 
+    if text.startswith("/set_source"):
+        return _handle_source_update(chat_id, text)
+
     return "Unknown command. Use /start to see available commands."
 
 
@@ -242,6 +246,18 @@ def _handle_filter_update(chat_id: str, text: str, field_name: str) -> str:
 
     with SessionLocal() as db:
         vacancy_filter = update_vacancy_filter(db, chat_id, **{field_name: value})
+        return "Filters updated:\n" + format_vacancy_filter(vacancy_filter)
+
+
+def _handle_source_update(chat_id: str, text: str) -> str:
+    _, _, raw_value = text.partition(" ")
+    source = raw_value.strip()
+
+    if source not in {"djinni", "praca_pl"}:
+        return "Unsupported source. Use: djinni or praca_pl"
+
+    with SessionLocal() as db:
+        vacancy_filter = update_vacancy_filter(db, chat_id, source=source)
         return "Filters updated:\n" + format_vacancy_filter(vacancy_filter)
 
 

@@ -1,7 +1,7 @@
 import logging
 
 from app.db import SessionLocal, create_tables
-from app.models import ScrapeFilters, VacancyCreate, save_vacancies
+from app.models import JobCreate, ScrapeFilters, save_vacancies
 from app.scrapers import scrape_jobs
 
 
@@ -12,7 +12,7 @@ def scrape_and_save(
     source: str = "djinni",
     filters: ScrapeFilters | None = None,
     pause_before_close: bool = False,
-) -> list[VacancyCreate]:
+) -> list[JobCreate]:
     _ensure_logging_configured()
     logger.info("Scrape flow started: source=%s", source)
     vacancies = scrape_jobs(
@@ -34,7 +34,7 @@ def scrape_and_save(
     return vacancies
 
 
-def scrape_and_save_djinni(pause_before_close: bool = False) -> list[VacancyCreate]:
+def scrape_and_save_djinni(pause_before_close: bool = False) -> list[JobCreate]:
     return scrape_and_save(source="djinni", pause_before_close=pause_before_close)
 
 

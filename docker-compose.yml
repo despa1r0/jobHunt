@@ -34,6 +34,7 @@ services:
       SCRAPER_NAVIGATION_TIMEOUT_MS: ${SCRAPER_NAVIGATION_TIMEOUT_MS:-60000}
       SCRAPER_SELECTOR_TIMEOUT_MS: ${SCRAPER_SELECTOR_TIMEOUT_MS:-10000}
       SCRAPER_RETRY_COUNT: ${SCRAPER_RETRY_COUNT:-2}
+      NORMALIZATION_USE_GPT4FREE: ${NORMALIZATION_USE_GPT4FREE:-false}
       DJINNI_URL: ${DJINNI_URL:-https://djinni.co/jobs/?primary_keyword=Python&exp_level=no_exp}
       PRACA_PL_URL: ${PRACA_PL_URL:-https://www.praca.pl/s-python.html}
     command: ["python", "manual/run_bot_test.py"]
@@ -53,6 +54,7 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-jobhunt}
+      NORMALIZATION_USE_GPT4FREE: ${NORMALIZATION_USE_GPT4FREE:-false}
     ports:
       - "${API_PORT:-8000}:8000"
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

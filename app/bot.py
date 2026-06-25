@@ -1,11 +1,16 @@
+from html import escape
+
 from app.db import SessionLocal, create_tables
 from app.flow import scrape_and_save
 from app.models import (
     clear_sent_vacancies,
     count_vacancies,
+    count_vacancies_by_source,
     format_vacancy_filter,
     get_active_vacancies,
+    get_latest_vacancies,
     get_or_create_bot_state,
+    get_or_create_user,
     get_or_create_vacancy_filter,
     get_vacancy_by_id,
     mark_vacancy_sent,
@@ -23,7 +28,10 @@ from app.telegram import (
 WELCOME_TEXT = (
     "Vacancy bot is running.\n"
     "Commands:\n"
+    "/help - show commands\n"
     "/count - show saved vacancies count\n"
+    "/stats - show saved and active vacancy stats\n"
+    "/latest [source] - show latest saved vacancies\n"
     "/active - show active vacancies count\n"
     "/next - show active vacancy with navigation buttons\n"
     "/new - show new vacancies matching your filters\n"
@@ -35,6 +43,9 @@ WELCOME_TEXT = (
     "/set_location remote\n"
     "/include python fastapi\n"
     "/exclude senior lead\n"
+    "/clear_location\n"
+    "/clear_include\n"
+    "/clear_exclude\n"
     "/set_source djinni|praca_pl\n"
     "/scrape - scrape current source with current filters"
 )
@@ -94,14 +105,24 @@ class BotMessage:
 def handle_bot_command(chat_id: str, text: str) -> str | BotMessage | None:
     if text == "/start":
         with SessionLocal() as db:
+            get_or_create_user(db, chat_id)
             get_or_create_bot_state(db, chat_id)
             get_or_create_vacancy_filter(db, chat_id)
+        return WELCOME_TEXT
+
+    if text == "/help":
         return WELCOME_TEXT
 
     if text == "/count":
         with SessionLocal() as db:
             total = count_vacancies(db)
         return f"Saved vacancies: {total}"
+
+    if text == "/stats":
+        return _handle_stats(chat_id)
+
+    if text == "/latest" or text.startswith("/latest "):
+        return _handle_latest(text)
 
     if text == "/active":
         return _handle_active_count(chat_id)
@@ -140,6 +161,15 @@ def handle_bot_command(chat_id: str, text: str) -> str | BotMessage | None:
 
     if text.startswith("/exclude"):
         return _handle_filter_update(chat_id, text, "exclude_keywords")
+
+    if text == "/clear_location":
+        return _handle_clear_filter(chat_id, "location")
+
+    if text == "/clear_include":
+        return _handle_clear_filter(chat_id, "include_keywords")
+
+    if text == "/clear_exclude":
+        return _handle_clear_filter(chat_id, "exclude_keywords")
 
     if text.startswith("/set_source"):
         return _handle_source_update(chat_id, text)
@@ -216,6 +246,63 @@ def _handle_scrape(chat_id: str) -> str:
     return f"Scraped and saved vacancies: {len(vacancies)}"
 
 
+def _handle_stats(chat_id: str) -> str:
+    with SessionLocal() as db:
+        vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
+        active_total = len(get_active_vacancies(db, chat_id, vacancy_filter))
+        saved_total = count_vacancies(db)
+        by_source = count_vacancies_by_source(db)
+
+    source_lines = [
+        f"- {source}: {total}"
+        for source, total in sorted(by_source.items())
+    ]
+    if not source_lines:
+        source_lines = ["- no saved vacancies yet"]
+
+    return "\n".join(
+        [
+            f"Saved vacancies: {saved_total}",
+            f"Active vacancies for current filters: {active_total}",
+            "By source:",
+            *source_lines,
+        ]
+    )
+
+
+def _handle_latest(text: str) -> str | BotMessage:
+    _, _, raw_source = text.partition(" ")
+    source = raw_source.strip() or None
+    if source and source not in {"djinni", "praca_pl"}:
+        return "Unsupported source. Use: /latest, /latest djinni, or /latest praca_pl"
+
+    with SessionLocal() as db:
+        vacancies = get_latest_vacancies(db, limit=5, source=source)
+
+    if not vacancies:
+        return "No saved vacancies yet."
+
+    lines = ["<b>Latest saved vacancies:</b>"]
+    for index, vacancy in enumerate(vacancies, start=1):
+        company = f" at {vacancy.company_name}" if vacancy.company_name else ""
+        location = f" ({vacancy.location})" if vacancy.location else ""
+        lines.append(
+            "\n".join(
+                [
+                    f"{index}. <b>{escape(vacancy.title)}</b>{escape(company)}",
+                    f"   {escape(vacancy.source)}{escape(location)}",
+                    f"   {escape(vacancy.url)}",
+                ]
+            )
+        )
+
+    return BotMessage(
+        "\n\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
 def _handle_active_count(chat_id: str) -> str:
     with SessionLocal() as db:
         vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
@@ -246,6 +333,13 @@ def _handle_filter_update(chat_id: str, text: str, field_name: str) -> str:
 
     with SessionLocal() as db:
         vacancy_filter = update_vacancy_filter(db, chat_id, **{field_name: value})
+        return "Filters updated:\n" + format_vacancy_filter(vacancy_filter)
+
+
+def _handle_clear_filter(chat_id: str, field_name: str) -> str:
+    with SessionLocal() as db:
+        vacancy_filter = update_vacancy_filter(db, chat_id, **{field_name: None})
+        update_bot_offset(db, chat_id, 0)
         return "Filters updated:\n" + format_vacancy_filter(vacancy_filter)
 
 

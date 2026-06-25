@@ -24,3 +24,10 @@ def create_tables() -> None:
     import app.models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+
+
+def reset_tables() -> None:
+    import app.models  # noqa: F401
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)

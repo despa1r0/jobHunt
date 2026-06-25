@@ -1,4 +1,4 @@
-from app.models import ScrapeFilters, VacancyCreate
+from app.models import JobCreate, ScrapeFilters
 from app.scrapers.djinni import scrape_djinni_jobs
 from app.scrapers.praca_pl import scrape_praca_pl_jobs
 
@@ -13,7 +13,7 @@ def scrape_jobs(
     source: str = "djinni",
     filters: ScrapeFilters | None = None,
     pause_before_close: bool = False,
-) -> list[VacancyCreate]:
+) -> list[JobCreate]:
     scraper = SCRAPERS.get(source)
     if scraper is None:
         supported_sources = ", ".join(sorted(SCRAPERS))

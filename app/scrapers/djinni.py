@@ -11,7 +11,7 @@ from playwright.sync_api import (
 )
 
 from app.config import get_settings
-from app.models import ScrapeFilters, VacancyCreate
+from app.models import JobCreate, ScrapeFilters
 
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ def scrape_djinni_jobs(
     filters: ScrapeFilters | None = None,
     limit: int | None = None,
     pause_before_close: bool = False,
-) -> list[VacancyCreate]:
+) -> list[JobCreate]:
     settings = get_settings()
     _ensure_logging_configured()
     search_url = _build_djinni_search_url(filters) if filters else settings.djinni_url
@@ -62,7 +62,7 @@ def scrape_djinni_jobs(
             urls = _collect_djinni_job_urls(page, limit)
             logger.info("Djinni job links found: count=%s url=%s", len(urls), search_url)
 
-            vacancies: list[VacancyCreate] = []
+            vacancies: list[JobCreate] = []
             for index, url in enumerate(urls, start=1):
                 logger.info(
                     "Djinni vacancy open: index=%s total=%s url=%s",
@@ -201,12 +201,12 @@ def _split_filter_value(value: str | None) -> list[str]:
     ]
 
 
-def _parse_djinni_detail_page(page: Page, url: str) -> VacancyCreate:
+def _parse_djinni_detail_page(page: Page, url: str) -> JobCreate:
     description = _extract_detail_text(page)
     page_lines = _extract_page_lines(page)
     title = _safe_inner_text(page, "h1") or _extract_title_from_lines(page_lines)
 
-    return VacancyCreate(
+    return JobCreate(
         source="djinni",
         external_id=_build_external_id(url),
         title=title[:255],
@@ -214,7 +214,7 @@ def _parse_djinni_detail_page(page: Page, url: str) -> VacancyCreate:
         salary=_extract_salary(page_lines),
         location=_extract_location(page_lines),
         url=url,
-        description=description,
+        description_raw=description,
     )
 
 

@@ -2,11 +2,25 @@ from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 
-from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, delete, func, select
+from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    delete,
+    func,
+    select,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.db import Base
+from app.normalization.cleaner import content_hash
+from app.normalization.llm import normalized_to_json, normalize_job_payload
+from app.normalization.schemas import NormalizedJob
 
 
 @dataclass(frozen=True)
@@ -34,7 +48,7 @@ class VacancySection:
         ]
 
 
-class VacancyCreate(BaseModel):
+class JobCreate(BaseModel):
     source: str = Field(min_length=1, max_length=32)
     external_id: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=255)
@@ -42,7 +56,28 @@ class VacancyCreate(BaseModel):
     salary: str | None = Field(default=None, max_length=255)
     location: str | None = Field(default=None, max_length=255)
     url: str = Field(min_length=1)
-    description: str | None = None
+    description_raw: str | None = None
+    description_html: str | None = None
+    normalized_data: NormalizedJob | dict | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_description(cls, data: object) -> object:
+        if (
+            isinstance(data, dict)
+            and "description" in data
+            and "description_raw" not in data
+        ):
+            data = data.copy()
+            data["description_raw"] = data.pop("description")
+        return data
+
+    @property
+    def description(self) -> str | None:
+        return self.description_raw
+
+
+VacancyCreate = JobCreate
 
 
 class ScrapeFilters(BaseModel):
@@ -56,25 +91,79 @@ class ScrapeFilters(BaseModel):
 
 
 class Vacancy(Base):
-    __tablename__ = "vacancies"
+    __tablename__ = "jobs"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_jobs_source_external_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     source: Mapped[str] = mapped_column(String(32), index=True)
-    external_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    external_id: Mapped[str] = mapped_column(String(128), index=True)
+    url: Mapped[str] = mapped_column(Text, unique=True)
     title: Mapped[str] = mapped_column(String(255), index=True)
     company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    salary: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    url: Mapped[str] = mapped_column(Text)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
+    description_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    normalized_data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    updated_at: Mapped[datetime] = mapped_column(
+    last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+    @property
+    def created_at(self) -> datetime:
+        return self.first_seen_at
+
+    @property
+    def updated_at(self) -> datetime:
+        return self.last_seen_at
+
+    @property
+    def company(self) -> str | None:
+        return self._normalized_value("company") or self.company_name
+
+    @property
+    def salary(self) -> str | None:
+        salary = self._normalized_value("salary")
+        if not isinstance(salary, dict):
+            return None
+
+        values = []
+        if salary.get("min") is not None and salary.get("max") is not None:
+            if salary["min"] == salary["max"]:
+                values.append(str(salary["min"]))
+            else:
+                values.append(f"{salary['min']}-{salary['max']}")
+        elif salary.get("min") is not None:
+            values.append(f"from {salary['min']}")
+        elif salary.get("max") is not None:
+            values.append(f"up to {salary['max']}")
+
+        if salary.get("currency"):
+            values.append(str(salary["currency"]))
+        if salary.get("period"):
+            values.append(f"/ {salary['period']}")
+        return " ".join(values) or None
+
+    @property
+    def location(self) -> str | None:
+        value = self._normalized_value("location")
+        return str(value) if value else None
+
+    @property
+    def description(self) -> str | None:
+        return self.description_raw
+
+    def _normalized_value(self, key: str):
+        if not isinstance(self.normalized_data, dict):
+            return None
+        return self.normalized_data.get(key)
 
     def as_telegram_html(self, details_page: int = 0) -> str:
         pages = self.telegram_html_pages()
@@ -120,6 +209,16 @@ class Vacancy(Base):
         return parts
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    telegram_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class BotState(Base):
     __tablename__ = "bot_states"
 
@@ -138,7 +237,7 @@ class BotState(Base):
 
 
 class VacancyFilter(Base):
-    __tablename__ = "vacancy_filters"
+    __tablename__ = "search_filters"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     chat_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -173,14 +272,26 @@ class VacancyFilter(Base):
 
 
 class SentVacancy(Base):
-    __tablename__ = "sent_vacancies"
+    __tablename__ = "user_jobs"
     __table_args__ = (
         UniqueConstraint("chat_id", "vacancy_id", name="uq_sent_vacancy_chat"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
+        index=True,
+    )
     chat_id: Mapped[str] = mapped_column(String(64), index=True)
-    vacancy_id: Mapped[int] = mapped_column(ForeignKey("vacancies.id"), index=True)
+    vacancy_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    filter_id: Mapped[int | None] = mapped_column(
+        ForeignKey("search_filters.id"),
+        nullable=True,
+    )
+    is_viewed: Mapped[int] = mapped_column(Integer, default=0)
+    is_saved: Mapped[int] = mapped_column(Integer, default=0)
+    is_hidden: Mapped[int] = mapped_column(Integer, default=0)
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -188,15 +299,42 @@ class SentVacancy(Base):
 
 def save_vacancy(db: Session, payload: VacancyCreate) -> Vacancy:
     existing = db.execute(
-        select(Vacancy).where(Vacancy.external_id == payload.external_id)
+        select(Vacancy).where(
+            Vacancy.source == payload.source,
+            Vacancy.external_id == payload.external_id,
+        )
     ).scalar_one_or_none()
+    normalized_data = normalized_to_json(payload.normalized_data)
+    if not normalized_data:
+        normalized_data = normalize_job_payload(payload).model_dump(mode="json")
+
+    payload_hash = content_hash(
+        payload.title,
+        payload.company_name,
+        payload.url,
+        payload.description_raw,
+        str(normalized_data),
+    )
+    values = {
+        "source": payload.source,
+        "external_id": payload.external_id,
+        "url": payload.url,
+        "title": payload.title,
+        "company_name": payload.company_name,
+        "description_raw": payload.description_raw,
+        "description_html": payload.description_html,
+        "normalized_data": normalized_data,
+        "content_hash": payload_hash,
+        "status": "active",
+    }
 
     if existing is None:
-        existing = Vacancy(**payload.model_dump())
+        existing = Vacancy(**values)
         db.add(existing)
     else:
-        for field_name, value in payload.model_dump().items():
+        for field_name, value in values.items():
             setattr(existing, field_name, value)
+        existing.last_seen_at = func.now()
 
     db.commit()
     db.refresh(existing)
@@ -212,6 +350,18 @@ def get_latest_vacancy(db: Session) -> Vacancy | None:
     return db.execute(statement).scalars().first()
 
 
+def get_latest_vacancies(
+    db: Session,
+    limit: int = 5,
+    source: str | None = None,
+) -> list[Vacancy]:
+    limit = max(1, min(limit, 25))
+    statement = select(Vacancy).order_by(Vacancy.id.desc()).limit(limit)
+    if source:
+        statement = statement.where(Vacancy.source == source)
+    return list(db.execute(statement).scalars())
+
+
 def get_vacancy_by_id(db: Session, vacancy_id: int) -> Vacancy | None:
     statement = select(Vacancy).where(Vacancy.id == vacancy_id)
     return db.execute(statement).scalar_one_or_none()
@@ -219,6 +369,13 @@ def get_vacancy_by_id(db: Session, vacancy_id: int) -> Vacancy | None:
 
 def count_vacancies(db: Session) -> int:
     return db.execute(select(func.count(Vacancy.id))).scalar_one()
+
+
+def count_vacancies_by_source(db: Session) -> dict[str, int]:
+    rows = db.execute(
+        select(Vacancy.source, func.count(Vacancy.id)).group_by(Vacancy.source)
+    ).all()
+    return {source: total for source, total in rows}
 
 
 def get_vacancy_page(db: Session, offset: int, limit: int = 1) -> list[Vacancy]:
@@ -256,6 +413,20 @@ def get_or_create_bot_state(db: Session, chat_id: str) -> BotState:
     db.commit()
     db.refresh(state)
     return state
+
+
+def get_or_create_user(db: Session, telegram_id: str) -> User:
+    user = db.execute(
+        select(User).where(User.telegram_id == telegram_id)
+    ).scalar_one_or_none()
+    if user is not None:
+        return user
+
+    user = User(telegram_id=telegram_id)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 def get_or_create_vacancy_filter(db: Session, chat_id: str) -> VacancyFilter:
@@ -331,7 +502,18 @@ def mark_vacancy_sent(db: Session, chat_id: str, vacancy_id: int) -> None:
     if existing is not None:
         return
 
-    db.add(SentVacancy(chat_id=chat_id, vacancy_id=vacancy_id))
+    user = get_or_create_user(db, chat_id)
+    vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
+    db.add(
+        SentVacancy(
+            user_id=user.id,
+            chat_id=chat_id,
+            vacancy_id=vacancy_id,
+            filter_id=vacancy_filter.id,
+            is_viewed=1,
+            is_hidden=1,
+        )
+    )
     db.commit()
 
 

@@ -25,6 +25,7 @@ SCRAPER_HEADLESS=false
 SCRAPER_NAVIGATION_TIMEOUT_MS=60000
 SCRAPER_SELECTOR_TIMEOUT_MS=10000
 SCRAPER_RETRY_COUNT=2
+NORMALIZATION_USE_GPT4FREE=false
 DJINNI_URL=https://djinni.co/jobs/?primary_keyword=Python&exp_level=no_exp
 PRACA_PL_URL=https://www.praca.pl/s-python.html
 ```
@@ -91,11 +92,57 @@ Check logs:
 docker compose logs -f bot-worker
 ```
 
+Rebuild the VPS after pulling new code:
+
+```bash
+git pull origin main
+docker compose down
+docker compose up -d --build postgres bot-worker
+```
+
+After schema-breaking changes, reset tables once:
+
+```bash
+docker compose exec bot-worker python manual/reset_db.py --yes
+```
+
+This drops and recreates ORM tables: `users`, `search_filters`, `jobs`, `user_jobs`, and `bot_states`.
+
+## Filters
+
+Production filters are stored in Postgres and edited through Telegram commands:
+
+```text
+/set_source djinni
+/set_keywords Python FastAPI
+/set_experience no_exp,1y
+/set_english pre,intermediate,upper
+/set_location remote
+/include python fastapi sql backend
+/exclude senior lead architect manager devops
+```
+
+For Praca.pl:
+
+```text
+/set_source praca_pl
+/set_keywords python junior
+/set_location warszawa
+/include python sql backend
+/exclude senior lead manager
+```
+
+Static examples live in `manual/filter_examples.py`. Use that file as a template for hardcoded local/manual filters, not as the production source of truth.
+
 Useful bot commands:
 
 ```text
 /start
+/help
 /count
+/stats
+/latest
+/latest djinni
 /active
 /next
 /new
@@ -107,6 +154,9 @@ Useful bot commands:
 /set_location remote
 /include python fastapi
 /exclude senior lead
+/clear_location
+/clear_include
+/clear_exclude
 /set_source praca_pl
 /scrape
 ```
@@ -124,3 +174,13 @@ Not interested
 `Not interested` removes the vacancy from the active list for the current chat.
 `Details prev` and `Details next` appear only when vacancy details are longer than one Telegram message.
 Use `/reset_seen` if old vacancies disappeared from the active list and should be shown again.
+
+Optional API endpoints:
+
+```text
+GET /health
+GET /stats
+GET /vacancies?limit=10
+GET /vacancies?source=djinni&limit=5
+GET /vacancies/{vacancy_id}
+```

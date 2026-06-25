@@ -33,6 +33,10 @@ class Settings:
             default=10000,
         )
         self.scraper_retry_count = _env_int("SCRAPER_RETRY_COUNT", default=2)
+        self.normalization_use_gpt4free = _env_bool(
+            "NORMALIZATION_USE_GPT4FREE",
+            default=False,
+        )
         self.djinni_url = os.getenv(
             "DJINNI_URL",
             "https://djinni.co/jobs/?primary_keyword=Python&exp_level=no_exp",

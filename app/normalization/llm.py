@@ -160,7 +160,7 @@ def _normalize_with_gpt4free(payload: "JobCreate") -> NormalizedJob:
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": USER_PROMPT_TEMPLATE.format(input_text=input_text),
+                "content": USER_PROMPT_TEMPLATE.replace("{input_text}", input_text),
             },
         ],
     )

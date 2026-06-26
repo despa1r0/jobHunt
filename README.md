@@ -209,6 +209,14 @@ Build a sample Discord embed payload from normalized job data:
 .venv\Scripts\python.exe manual\preview_discord_embed.py
 ```
 
+Send a local test message through a Discord bot token:
+
+```powershell
+.venv\Scripts\python.exe manual\discord_test\send_test_embed.py
+```
+
+See `manual/discord_test/README.md` for required bot permissions and dry-run usage.
+
 The preview prints JSON shaped for Discord webhooks:
 
 ```json

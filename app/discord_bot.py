@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 import discord
@@ -29,6 +31,8 @@ from app.models import (
 from app.normalization.schemas import NormalizedJob
 from app.scrapers.sources import ALL_SOURCES
 
+
+logger = logging.getLogger(__name__)
 
 MENU_TEXT = """
 **JobHunt Discord Commands**
@@ -181,7 +185,16 @@ def run_discord_bot() -> None:
                     return
                 filters = filters.model_copy(update={"source": source})
 
-            vacancies = scrape_and_save(source=filters.source, filters=filters)
+            try:
+                vacancies = await asyncio.to_thread(
+                    scrape_and_save,
+                    source=filters.source,
+                    filters=filters,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Discord scrape command failed")
+                await ctx.send(f"Scrape failed: `{type(exc).__name__}: {exc}`")
+                return
 
         await ctx.send(f"Scraped and saved jobs: `{len(vacancies)}`")
         await _send_active_job(ctx, reset_offset=True)

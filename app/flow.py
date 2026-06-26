@@ -2,7 +2,7 @@ import logging
 
 from app.db import SessionLocal, create_tables
 from app.models import JobCreate, ScrapeFilters, save_vacancies
-from app.scrapers import scrape_jobs
+from app.scrapers.registry import scrape_jobs
 
 
 logger = logging.getLogger(__name__)

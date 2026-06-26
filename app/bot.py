@@ -14,9 +14,11 @@ from app.models import (
     get_or_create_vacancy_filter,
     get_vacancy_by_id,
     mark_vacancy_sent,
+    supported_filter_sources,
     update_bot_offset,
     update_vacancy_filter,
 )
+from app.scrapers.sources import ALL_SOURCES
 from app.telegram import (
     get_telegram_updates,
     send_telegram_message,
@@ -40,14 +42,15 @@ WELCOME_TEXT = (
     "/set_keywords Python\n"
     "/set_experience no_exp,1y\n"
     "/set_english pre,intermediate,upper\n"
-    "/set_location remote\n"
+    "/set_location remote poznan\n"
     "/include python fastapi\n"
     "/exclude senior lead\n"
     "/clear_location\n"
     "/clear_include\n"
     "/clear_exclude\n"
-    "/set_source djinni|praca_pl\n"
-    "/scrape - scrape current source with current filters"
+    "/set_source all|djinni|praca_pl\n"
+    "/scrape - scrape current source with current filters\n"
+    "/scrape all - scrape every supported source with current filters"
 )
 
 
@@ -138,8 +141,8 @@ def handle_bot_command(chat_id: str, text: str) -> str | BotMessage | None:
             vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
             return format_vacancy_filter(vacancy_filter)
 
-    if text == "/scrape":
-        return _handle_scrape(chat_id)
+    if text == "/scrape" or text.startswith("/scrape "):
+        return _handle_scrape(chat_id, text)
 
     if text == "/reset_seen":
         return _handle_reset_seen(chat_id)
@@ -237,10 +240,17 @@ def _handle_new(chat_id: str) -> str | BotMessage | None:
     return "No new vacancies for current filters."
 
 
-def _handle_scrape(chat_id: str) -> str:
+def _handle_scrape(chat_id: str, text: str = "/scrape") -> str:
     with SessionLocal() as db:
         vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
         filters = vacancy_filter.to_scrape_filters()
+
+    _, _, raw_source = text.partition(" ")
+    requested_source = raw_source.strip()
+    if requested_source:
+        if requested_source not in supported_filter_sources():
+            return _unsupported_source_message()
+        filters = filters.model_copy(update={"source": requested_source})
 
     vacancies = scrape_and_save(source=filters.source, filters=filters)
     return f"Scraped and saved vacancies: {len(vacancies)}"
@@ -273,8 +283,10 @@ def _handle_stats(chat_id: str) -> str:
 def _handle_latest(text: str) -> str | BotMessage:
     _, _, raw_source = text.partition(" ")
     source = raw_source.strip() or None
-    if source and source not in {"djinni", "praca_pl"}:
-        return "Unsupported source. Use: /latest, /latest djinni, or /latest praca_pl"
+    if source == ALL_SOURCES:
+        source = None
+    if source and source not in supported_filter_sources():
+        return _unsupported_source_message(prefix="Unsupported source for /latest.")
 
     with SessionLocal() as db:
         vacancies = get_latest_vacancies(db, limit=5, source=source)
@@ -347,12 +359,17 @@ def _handle_source_update(chat_id: str, text: str) -> str:
     _, _, raw_value = text.partition(" ")
     source = raw_value.strip()
 
-    if source not in {"djinni", "praca_pl"}:
-        return "Unsupported source. Use: djinni or praca_pl"
+    if source not in supported_filter_sources():
+        return _unsupported_source_message()
 
     with SessionLocal() as db:
         vacancy_filter = update_vacancy_filter(db, chat_id, source=source)
         return "Filters updated:\n" + format_vacancy_filter(vacancy_filter)
+
+
+def _unsupported_source_message(prefix: str = "Unsupported source.") -> str:
+    sources = ", ".join(sorted(supported_filter_sources()))
+    return f"{prefix} Use one of: {sources}"
 
 
 def handle_callback_query(callback_query: dict) -> None:

@@ -4,6 +4,9 @@ Use null when information is missing.
 Use [] when a list is empty.
 Do not change the vacancy URL.
 Separate required and optional requirements.
+If the vacancy mentions several offices or countries, keep them in location.
+If the vacancy is remote but also lists offices, set remote_type to remote or hybrid from the text and keep the office locations in location.
+Do not treat remote_type as a replacement for location.
 """
 
 USER_PROMPT_TEMPLATE = """Normalize this job vacancy into the exact JSON shape below.

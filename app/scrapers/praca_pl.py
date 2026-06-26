@@ -180,7 +180,9 @@ def _looks_like_praca_pl_vacancy_url(url: str) -> bool:
 
 def _build_praca_pl_search_url(filters: ScrapeFilters) -> str:
     keywords_slug = _slugify_search_part(filters.search_keywords or "python", default="python")
-    location_slug = _slugify_search_part(filters.location or "", default="")
+    locations = _split_filter_value(filters.location)
+    location = locations[0] if len(locations) == 1 and locations[0].lower() != "remote" else ""
+    location_slug = _slugify_search_part(location, default="")
 
     if location_slug:
         return f"{PRACA_PL_BASE_URL}/s-{keywords_slug},{location_slug}.html"

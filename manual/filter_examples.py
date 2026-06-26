@@ -8,14 +8,19 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.models import ScrapeFilters
 
 
-DJINNI_JUNIOR_PYTHON = ScrapeFilters(
-    source="djinni",
+ALL_SOURCES_JUNIOR_PYTHON = ScrapeFilters(
+    source="all",
     search_keywords="Python",
     experience_levels="no_exp,1y",
     english_levels="pre,intermediate,upper",
-    location="remote",
+    location="remote poznan",
     include_keywords="python fastapi django sql backend",
     exclude_keywords="senior lead architect manager devops",
+)
+
+
+DJINNI_JUNIOR_PYTHON = ALL_SOURCES_JUNIOR_PYTHON.model_copy(
+    update={"source": "djinni"}
 )
 
 

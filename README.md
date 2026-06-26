@@ -114,13 +114,14 @@ It also removes legacy tables: `vacancies`, `vacancy_filters`, and `sent_vacanci
 Production filters are stored in Postgres and edited through Telegram commands:
 
 ```text
-/set_source djinni
+/set_source all
 /set_keywords Python FastAPI
 /set_experience no_exp,1y
 /set_english pre,intermediate,upper
-/set_location remote
+/set_location remote poznan
 /include python fastapi sql backend
 /exclude senior lead architect manager devops
+/scrape all
 ```
 
 For Praca.pl:
@@ -134,6 +135,18 @@ For Praca.pl:
 ```
 
 Static examples live in `manual/filter_examples.py`. Use that file as a template for hardcoded local/manual filters, not as the production source of truth.
+
+Multiple locations are treated as OR in post-filtering:
+
+```text
+/set_location remote poznan
+```
+
+This matches vacancies that mention `remote` or `poznan`. Polish diacritics are normalized, so `poznan` also matches `Poznań`.
+
+`/scrape all` runs every supported source. `/set_source all` shows active vacancies from every supported source.
+
+There is no hardcoded scraper limit. Scrapers parse all vacancy links visible on the loaded search page. API list endpoints are capped to 25 items, and `/latest` shows 5 items.
 
 Useful bot commands:
 
@@ -158,8 +171,10 @@ Useful bot commands:
 /clear_location
 /clear_include
 /clear_exclude
+/set_source all
 /set_source praca_pl
 /scrape
+/scrape all
 ```
 
 Vacancy messages include inline buttons:

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
+import unicodedata
 
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import (
@@ -21,6 +22,7 @@ from app.db import Base
 from app.normalization.cleaner import content_hash
 from app.normalization.llm import normalized_to_json, normalize_job_payload
 from app.normalization.schemas import NormalizedJob
+from app.scrapers.sources import ALL_SOURCES, SUPPORTED_SOURCES
 
 
 @dataclass(frozen=True)
@@ -33,7 +35,7 @@ class VacancySection:
             return f"<blockquote expandable>{escape(body)}</blockquote>"
 
         return (
-            f"<b>{escape(self.title)}:</b>\n"
+            f"<b>{escape(self.title)}</b>\n"
             f"<blockquote expandable>{escape(body)}</blockquote>"
         )
 
@@ -81,7 +83,7 @@ VacancyCreate = JobCreate
 
 
 class ScrapeFilters(BaseModel):
-    source: str = "djinni"
+    source: str = "all"
     search_keywords: str = "Python"
     experience_levels: str = "no_exp,1y"
     english_levels: str = "pre,intermediate,upper"
@@ -200,6 +202,7 @@ class Vacancy(Base):
     def _telegram_header_parts(self) -> list[str]:
         parts = [f"<b>{escape(self.title)}</b>"]
 
+        parts.append(f"<b>Source:</b> {escape(self.source)}")
         if self.company_name:
             parts.append(f"<b>Company:</b> {escape(self.company_name)}")
         if self.salary:
@@ -241,7 +244,7 @@ class VacancyFilter(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     chat_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    source: Mapped[str] = mapped_column(String(32), default="djinni")
+    source: Mapped[str] = mapped_column(String(32), default=ALL_SOURCES)
     search_keywords: Mapped[str] = mapped_column(String(255), default="Python")
     experience_levels: Mapped[str] = mapped_column(String(255), default="no_exp,1y")
     english_levels: Mapped[str] = mapped_column(
@@ -357,7 +360,7 @@ def get_latest_vacancies(
 ) -> list[Vacancy]:
     limit = max(1, min(limit, 25))
     statement = select(Vacancy).order_by(Vacancy.id.desc()).limit(limit)
-    if source:
+    if source and source != ALL_SOURCES:
         statement = statement.where(Vacancy.source == source)
     return list(db.execute(statement).scalars())
 
@@ -390,7 +393,6 @@ def get_filtered_vacancies(
     vacancies = list(
         db.execute(
             select(Vacancy)
-            .where(Vacancy.source == vacancy_filter.source)
             .order_by(Vacancy.id.desc())
         ).scalars()
     )
@@ -472,7 +474,6 @@ def get_unsent_vacancies(
     vacancies = list(
         db.execute(
             select(Vacancy)
-            .where(Vacancy.source == vacancy_filter.source)
             .where(Vacancy.id.not_in(sent_ids))
             .order_by(Vacancy.id.desc())
         ).scalars()
@@ -524,16 +525,18 @@ def clear_sent_vacancies(db: Session, chat_id: str) -> int:
 
 
 def vacancy_matches_filter(vacancy: Vacancy, vacancy_filter: VacancyFilter) -> bool:
-    haystack = " ".join(
-        value or ""
-        for value in [
-            vacancy.title,
-            vacancy.company_name,
-            vacancy.salary,
-            vacancy.location,
-            vacancy.description,
-        ]
-    ).lower()
+    haystack = _normalize_filter_text(
+        " ".join(
+            value or ""
+            for value in [
+                vacancy.title,
+                vacancy.company_name,
+                vacancy.salary,
+                vacancy.location,
+                vacancy.description,
+            ]
+        )
+    )
 
     include_keywords = _split_filter_values(vacancy_filter.include_keywords)
     exclude_keywords = _split_filter_values(vacancy_filter.exclude_keywords)
@@ -542,7 +545,11 @@ def vacancy_matches_filter(vacancy: Vacancy, vacancy_filter: VacancyFilter) -> b
         return False
     if exclude_keywords and any(keyword in haystack for keyword in exclude_keywords):
         return False
-    if vacancy_filter.location and vacancy_filter.location.lower() not in haystack:
+    if vacancy_filter.source != ALL_SOURCES and vacancy.source != vacancy_filter.source:
+        return False
+
+    location_values = _split_filter_values(vacancy_filter.location)
+    if location_values and not any(location in haystack for location in location_values):
         return False
 
     return True
@@ -566,10 +573,19 @@ def _split_filter_values(value: str | None) -> list[str]:
     if not value:
         return []
     return [
-        item.strip().lower()
+        _normalize_filter_text(item.strip())
         for item in value.replace(",", " ").split()
         if item.strip()
     ]
+
+
+def supported_filter_sources() -> set[str]:
+    return {*SUPPORTED_SOURCES, ALL_SOURCES}
+
+
+def _normalize_filter_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value.lower())
+    return "".join(char for char in normalized if not unicodedata.combining(char))
 
 
 def _split_description_sections(
@@ -630,12 +646,13 @@ def _format_vacancy_pages(
     current_parts = base_parts.copy()
 
     for block in blocks:
-        candidate = "\n".join([*current_parts, block])
+        candidate = "\n".join([*current_parts, "", block])
         if len(candidate) > max_chars and len(current_parts) > len(base_parts):
             pages.append("\n".join(current_parts))
-            current_parts = [*base_parts, block]
+            current_parts = [*base_parts, "", block]
             continue
 
+        current_parts.append("")
         current_parts.append(block)
 
     if len(current_parts) > len(base_parts):

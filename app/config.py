@@ -37,9 +37,23 @@ class Settings:
             default=10000,
         )
         self.scraper_retry_count = _env_int("SCRAPER_RETRY_COUNT", default=2)
+        self.normalization_provider = os.getenv(
+            "NORMALIZATION_PROVIDER",
+            "",
+        ).strip().lower()
         self.normalization_use_gpt4free = _env_bool(
             "NORMALIZATION_USE_GPT4FREE",
             default=False,
+        )
+        self.openmodel_api_key = os.getenv("OPENMODEL_API_KEY", "")
+        self.openmodel_model = os.getenv("OPENMODEL_MODEL", "deepseek-v4-flash")
+        self.openmodel_base_url = os.getenv(
+            "OPENMODEL_BASE_URL",
+            "https://api.openmodel.ai",
+        ).rstrip("/")
+        self.openmodel_timeout_seconds = _env_int(
+            "OPENMODEL_TIMEOUT_SECONDS",
+            default=90,
         )
         self.djinni_url = os.getenv(
             "DJINNI_URL",

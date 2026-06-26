@@ -5,6 +5,8 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+import requests
+
 from app.config import get_settings
 from app.normalization.cleaner import clean_text, compact_llm_input
 from app.normalization.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
@@ -134,7 +136,17 @@ BENEFIT_SECTION_MARKERS = (
 
 def normalize_job_payload(payload: "JobCreate") -> NormalizedJob:
     settings = get_settings()
-    if getattr(settings, "normalization_use_gpt4free", False):
+    provider = _selected_provider(settings)
+    if provider == "openmodel":
+        try:
+            normalized = _normalize_with_openmodel(payload)
+            normalized = _enrich_normalized_job(payload, normalized)
+            _log_normalization_result(payload, normalized, method="openmodel")
+            return normalized
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("OpenModel normalization failed, using fallback: %s", exc)
+
+    if provider == "g4f":
         try:
             normalized = _normalize_with_gpt4free(payload)
             normalized = _enrich_normalized_job(payload, normalized)
@@ -147,6 +159,15 @@ def normalize_job_payload(payload: "JobCreate") -> NormalizedJob:
     normalized = _enrich_normalized_job(payload, normalized)
     _log_normalization_result(payload, normalized, method="fallback")
     return normalized
+
+
+def _selected_provider(settings) -> str:
+    provider = getattr(settings, "normalization_provider", "")
+    if provider:
+        return provider
+    if getattr(settings, "normalization_use_gpt4free", False):
+        return "g4f"
+    return "none"
 
 
 def normalize_without_llm(payload: "JobCreate") -> NormalizedJob:
@@ -196,6 +217,68 @@ def _normalize_with_gpt4free(payload: "JobCreate") -> NormalizedJob:
     )
     raw_json = _extract_json_object(str(response))
     return _validate_llm_json(raw_json, payload)
+
+
+def _normalize_with_openmodel(payload: "JobCreate") -> NormalizedJob:
+    settings = get_settings()
+    if not settings.openmodel_api_key:
+        raise RuntimeError("OPENMODEL_API_KEY is required for OpenModel normalization")
+
+    input_text = compact_llm_input(
+        title=payload.title,
+        company_name=payload.company_name,
+        source=payload.source,
+        source_url=payload.url,
+        location=payload.location,
+        salary=payload.salary,
+        description_raw=payload.description_raw,
+    )
+    response = requests.post(
+        f"{settings.openmodel_base_url}/v1/messages",
+        headers={
+            "x-api-key": settings.openmodel_api_key,
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+        },
+        json={
+            "model": settings.openmodel_model,
+            "max_tokens": 2048,
+            "system": SYSTEM_PROMPT,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": USER_PROMPT_TEMPLATE.replace("{input_text}", input_text),
+                }
+            ],
+        },
+        timeout=settings.openmodel_timeout_seconds,
+    )
+    response.raise_for_status()
+    text = _extract_openmodel_text(response.json())
+    raw_json = _extract_json_object(text)
+    return _validate_llm_json(raw_json, payload)
+
+
+def _extract_openmodel_text(data: dict[str, Any]) -> str:
+    content = data.get("content")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("text"):
+                parts.append(str(item["text"]))
+            elif isinstance(item, str):
+                parts.append(item)
+        if parts:
+            return "\n".join(parts)
+
+    if isinstance(content, str):
+        return content
+    if isinstance(data.get("text"), str):
+        return data["text"]
+    if isinstance(data.get("output_text"), str):
+        return data["output_text"]
+
+    raise ValueError("OpenModel response does not contain text content")
 
 
 def _validate_llm_json(raw_json: str, payload: "JobCreate") -> NormalizedJob:

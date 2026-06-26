@@ -30,7 +30,9 @@ SCRAPER_HEADLESS=false
 SCRAPER_NAVIGATION_TIMEOUT_MS=60000
 SCRAPER_SELECTOR_TIMEOUT_MS=10000
 SCRAPER_RETRY_COUNT=2
-NORMALIZATION_USE_GPT4FREE=false
+NORMALIZATION_PROVIDER=openmodel
+OPENMODEL_API_KEY=your_openmodel_key
+OPENMODEL_MODEL=deepseek-v4-flash
 DJINNI_URL=https://djinni.co/jobs/?primary_keyword=Python&exp_level=no_exp
 PRACA_PL_URL=https://www.praca.pl/s-python.html
 ```
@@ -236,7 +238,9 @@ Required Discord `.env` values:
 DISCORD_BOT_TOKEN=...
 DISCORD_CHANNEL_ID=...
 DISCORD_GUILD_ID=...
-NORMALIZATION_USE_GPT4FREE=true
+NORMALIZATION_PROVIDER=openmodel
+OPENMODEL_API_KEY=...
+OPENMODEL_MODEL=deepseek-v4-flash
 ```
 
 No extra environment variables are required for background scraping. `/scrape`
@@ -293,6 +297,40 @@ Useful Discord commands:
 ```
 
 Vacancy embeds include buttons: `Open`, `Prev`, `Next`, `Save`, and `Hide`.
+
+## Normalization Provider
+
+The normalizer supports three modes:
+
+```env
+NORMALIZATION_PROVIDER=openmodel
+NORMALIZATION_PROVIDER=g4f
+NORMALIZATION_PROVIDER=none
+```
+
+Recommended VPS setup:
+
+```env
+NORMALIZATION_PROVIDER=openmodel
+OPENMODEL_API_KEY=your_openmodel_key
+OPENMODEL_MODEL=deepseek-v4-flash
+OPENMODEL_BASE_URL=https://api.openmodel.ai
+OPENMODEL_TIMEOUT_SECONDS=90
+```
+
+`g4f` is still available, but it is slower and less stable:
+
+```env
+NORMALIZATION_PROVIDER=g4f
+```
+
+The old setting still works for compatibility:
+
+```env
+NORMALIZATION_USE_GPT4FREE=true
+```
+
+If OpenModel or `g4f` fails, the app falls back to deterministic Python normalization.
 
 ## API
 

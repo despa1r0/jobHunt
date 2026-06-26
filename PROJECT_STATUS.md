@@ -4,7 +4,7 @@
 
 ```text
 Scrapers (Playwright)
-    -> normalization / gpt4free
+    -> normalization provider / fallback cleaner
     -> Pydantic validation
     -> PostgreSQL
     -> service layer
@@ -16,6 +16,7 @@ Scrapers (Playwright)
 - Two scraper sources: `djinni`, `praca_pl`.
 - `all` source mode for scraping and viewing jobs from every supported source.
 - Normalized job JSON stored in `jobs.normalized_data`.
+- LLM normalization providers: OpenModel, g4f, or deterministic fallback.
 - Pydantic schema validation for normalized jobs.
 - PostgreSQL tables for users, filters, jobs, user job state, and bot state.
 - Telegram bot with filters, scrape commands, active list navigation, and hidden jobs.
@@ -26,7 +27,9 @@ Scrapers (Playwright)
 ## Important Runtime Settings
 
 ```text
-NORMALIZATION_USE_GPT4FREE=true
+NORMALIZATION_PROVIDER=openmodel
+OPENMODEL_API_KEY=...
+OPENMODEL_MODEL=deepseek-v4-flash
 DISCORD_BOT_TOKEN=...
 DISCORD_CHANNEL_ID=...
 DISCORD_GUILD_ID=...
@@ -39,7 +42,6 @@ SCRAPER_HEADLESS=true
 
 - Move Telegram bot onto the same service layer as Discord and API.
 - Add API authentication before exposing it publicly.
-- Add background scrape jobs instead of blocking `/scrape` calls for long runs.
 - Add Alembic migrations for schema changes.
 - Add a web dashboard that consumes the FastAPI endpoints.
 - Add Discord scheduled notifications for newly found jobs.

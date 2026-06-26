@@ -308,6 +308,8 @@ def save_vacancy(db: Session, payload: VacancyCreate) -> Vacancy:
         )
     ).scalar_one_or_none()
     normalized_data = normalized_to_json(payload.normalized_data)
+    if not normalized_data and _existing_raw_payload_matches(existing, payload):
+        normalized_data = existing.normalized_data
     if not normalized_data:
         normalized_data = normalize_job_payload(payload).model_dump(mode="json")
 
@@ -342,6 +344,21 @@ def save_vacancy(db: Session, payload: VacancyCreate) -> Vacancy:
     db.commit()
     db.refresh(existing)
     return existing
+
+
+def _existing_raw_payload_matches(
+    existing: Vacancy | None,
+    payload: VacancyCreate,
+) -> bool:
+    if existing is None or not existing.normalized_data:
+        return False
+    return (
+        existing.title == payload.title
+        and existing.company_name == payload.company_name
+        and existing.url == payload.url
+        and existing.description_raw == payload.description_raw
+        and existing.description_html == payload.description_html
+    )
 
 
 def save_vacancies(db: Session, payloads: list[VacancyCreate]) -> list[Vacancy]:

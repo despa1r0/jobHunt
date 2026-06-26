@@ -16,6 +16,36 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+NORMALIZED_JOB_KEYS = {
+    "title",
+    "company",
+    "source",
+    "source_url",
+    "location",
+    "remote_type",
+    "seniority",
+    "salary",
+    "required_skills",
+    "optional_skills",
+    "languages",
+    "responsibilities",
+    "requirements",
+    "benefits",
+    "summary",
+}
+
+LIST_KEYS = {
+    "required_skills",
+    "optional_skills",
+    "languages",
+    "responsibilities",
+    "requirements",
+    "benefits",
+}
+
+REMOTE_TYPES = {"remote", "hybrid", "office"}
+SENIORITY_VALUES = {"intern", "junior", "mid", "senior", "lead", "manager"}
+
 KNOWN_SKILLS = [
     "Python",
     "Django",
@@ -165,7 +195,114 @@ def _normalize_with_gpt4free(payload: "JobCreate") -> NormalizedJob:
         ],
     )
     raw_json = _extract_json_object(str(response))
-    return NormalizedJob.model_validate_json(raw_json)
+    return _validate_llm_json(raw_json, payload)
+
+
+def _validate_llm_json(raw_json: str, payload: "JobCreate") -> NormalizedJob:
+    data = json.loads(raw_json)
+    if not isinstance(data, dict):
+        raise ValueError("LLM response JSON is not an object")
+
+    sanitized = _sanitize_llm_data(data, payload)
+    return NormalizedJob.model_validate(sanitized)
+
+
+def _sanitize_llm_data(data: dict[str, Any], payload: "JobCreate") -> dict[str, Any]:
+    sanitized = {key: value for key, value in data.items() if key in NORMALIZED_JOB_KEYS}
+    sanitized.setdefault("title", payload.title)
+    sanitized.setdefault("company", payload.company_name)
+    sanitized.setdefault("source", payload.source)
+    sanitized.setdefault("source_url", payload.url)
+    sanitized.setdefault("location", payload.location)
+    sanitized.setdefault("remote_type", None)
+    sanitized.setdefault("seniority", None)
+    sanitized.setdefault("salary", None)
+    sanitized.setdefault("summary", None)
+
+    for key in LIST_KEYS:
+        sanitized[key] = _sanitize_list_value(sanitized.get(key), key)
+
+    sanitized["remote_type"] = _sanitize_enum(
+        sanitized.get("remote_type"),
+        REMOTE_TYPES,
+    )
+    sanitized["seniority"] = _sanitize_enum(
+        sanitized.get("seniority"),
+        SENIORITY_VALUES,
+    )
+    sanitized["salary"] = _sanitize_salary(sanitized.get("salary"))
+    return sanitized
+
+
+def _sanitize_list_value(value: Any, key: str) -> list[Any]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        value = [value]
+
+    if key == "languages":
+        languages = []
+        for item in value:
+            if isinstance(item, dict) and item.get("name"):
+                languages.append(
+                    {
+                        "name": str(item["name"])[:64],
+                        "level": (
+                            str(item["level"])[:32]
+                            if item.get("level") is not None
+                            else None
+                        ),
+                    }
+                )
+            elif isinstance(item, str) and item.strip():
+                languages.append({"name": item.strip()[:64], "level": None})
+        return languages[:8]
+
+    return [str(item).strip() for item in value if str(item).strip()][:12]
+
+
+def _sanitize_enum(value: Any, allowed_values: set[str]) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized == "onsite":
+        normalized = "office"
+    if normalized == "on_site":
+        normalized = "office"
+    if normalized == "middle":
+        normalized = "mid"
+    if normalized in allowed_values:
+        return normalized
+    return None
+
+
+def _sanitize_salary(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return None
+
+    period = value.get("period")
+    if period is not None:
+        period = str(period).strip().lower()
+        if period not in {"hour", "day", "month", "year"}:
+            period = None
+
+    return {
+        "min": _to_int_or_none(value.get("min")),
+        "max": _to_int_or_none(value.get("max")),
+        "currency": str(value["currency"])[:16] if value.get("currency") else None,
+        "period": period,
+    }
+
+
+def _to_int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(float(str(value).replace(" ", "")))
+    except ValueError:
+        return None
 
 
 def _enrich_normalized_job(

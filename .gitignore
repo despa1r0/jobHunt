@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 playwright-report/
 test-results/
+manual/discord_test/

@@ -20,6 +20,9 @@ class Settings:
         self.postgres_db = os.getenv("POSTGRES_DB", "jobhunt")
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        self.discord_bot_token = os.getenv("DISCORD_BOT_TOKEN", "")
+        self.discord_channel_id = os.getenv("DISCORD_CHANNEL_ID", "")
+        self.discord_command_prefix = os.getenv("DISCORD_COMMAND_PREFIX", "!")
         self.scraper_headless = _env_bool(
             "SCRAPER_HEADLESS",
             default=self.app_env.lower() in {"docker", "prod", "production"},

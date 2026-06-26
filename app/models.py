@@ -470,11 +470,14 @@ def get_unsent_vacancies(
     chat_id: str,
     vacancy_filter: VacancyFilter,
 ) -> list[Vacancy]:
-    sent_ids = select(SentVacancy.vacancy_id).where(SentVacancy.chat_id == chat_id)
+    hidden_ids = select(SentVacancy.vacancy_id).where(
+        SentVacancy.chat_id == chat_id,
+        SentVacancy.is_hidden == 1,
+    )
     vacancies = list(
         db.execute(
             select(Vacancy)
-            .where(Vacancy.id.not_in(sent_ids))
+            .where(Vacancy.id.not_in(hidden_ids))
             .order_by(Vacancy.id.desc())
         ).scalars()
     )

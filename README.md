@@ -201,46 +201,65 @@ GET /vacancies?source=djinni&limit=5
 GET /vacancies/{vacancy_id}
 ```
 
-## Discord Preview
+## Discord Bot
 
-Build a sample Discord embed payload from normalized job data:
+The Discord bot uses prefix commands and sends vacancies as embeds built from `jobs.normalized_data`.
 
-```powershell
-.venv\Scripts\python.exe manual\preview_discord_embed.py
-```
-
-Send a local test message through a Discord bot token:
-
-```powershell
-.venv\Scripts\python.exe manual\discord_test\send_test_embed.py
-```
-
-See `manual/discord_test/README.md` for required bot permissions and dry-run usage.
-
-The preview prints JSON shaped for Discord webhooks:
-
-```json
-{
-  "embeds": [
-    {
-      "title": "Junior Python Developer",
-      "url": "https://example.com/job/123",
-      "description": "Junior backend role focused on Python APIs and SQL-backed services.",
-      "fields": []
-    }
-  ]
-}
-```
-
-For Discord notifications, the simplest setup is a webhook:
-
-```env
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-```
-
-For a full Discord bot with commands and interactions, also prepare:
+Required Discord `.env` values:
 
 ```env
 DISCORD_BOT_TOKEN=...
 DISCORD_CHANNEL_ID=...
+DISCORD_COMMAND_PREFIX=!
+NORMALIZATION_USE_GPT4FREE=true
 ```
+
+The Discord application must have Message Content Intent enabled. The bot needs these channel permissions:
+
+```text
+View Channel
+Send Messages
+Embed Links
+Read Message History
+```
+
+Run locally:
+
+```powershell
+.venv\Scripts\python.exe manual\run_discord_bot.py
+```
+
+Run with Docker Compose:
+
+```bash
+docker compose --profile discord up -d --build postgres discord-worker
+```
+
+Useful Discord commands:
+
+```text
+!menu
+!count
+!stats
+!latest
+!latest all
+!filters
+!set_source all
+!set_keywords Python FastAPI
+!set_experience no_exp,1y
+!set_english pre,intermediate,upper
+!set_location remote poznan
+!include python sql backend
+!exclude senior lead manager
+!clear_location
+!clear_include
+!clear_exclude
+!scrape
+!scrape all
+!new
+!next
+!prev
+!reset_seen
+```
+
+Vacancy embeds include buttons: `Open`, `Prev`, `Next`, `Save`, and `Hide`.

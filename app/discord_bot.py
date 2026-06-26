@@ -522,21 +522,19 @@ async def _send_message(
     view: discord.ui.View | None = None,
     ephemeral: bool = False,
 ) -> None:
+    kwargs = {
+        "content": content,
+        "embed": embed,
+        "ephemeral": ephemeral,
+    }
+    if view is not None:
+        kwargs["view"] = view
+
     if interaction.response.is_done():
-        await interaction.followup.send(
-            content=content,
-            embed=embed,
-            view=view,
-            ephemeral=ephemeral,
-        )
+        await interaction.followup.send(**kwargs)
         return
 
-    await interaction.response.send_message(
-        content=content,
-        embed=embed,
-        view=view,
-        ephemeral=ephemeral,
-    )
+    await interaction.response.send_message(**kwargs)
 
 
 async def _destination_channel(interaction: discord.Interaction):

@@ -189,6 +189,16 @@ def _build_praca_pl_search_url(filters: ScrapeFilters) -> str:
     return f"{PRACA_PL_BASE_URL}/s-{keywords_slug}.html"
 
 
+def _split_filter_value(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [
+        item.strip()
+        for item in value.replace(",", " ").split()
+        if item.strip()
+    ]
+
+
 def _slugify_search_part(value: str, default: str) -> str:
     slug = re.sub(r"[^0-9A-Za-zĄąĆćĘęŁłŃńÓóŚśŹźŻż]+", "-", value.lower())
     slug = re.sub(r"-+", "-", slug).strip("-")

@@ -22,6 +22,7 @@ class Settings:
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         self.discord_bot_token = os.getenv("DISCORD_BOT_TOKEN", "")
         self.discord_channel_id = os.getenv("DISCORD_CHANNEL_ID", "")
+        self.discord_guild_id = os.getenv("DISCORD_GUILD_ID", "")
         self.discord_command_prefix = os.getenv("DISCORD_COMMAND_PREFIX", "!")
         self.scraper_headless = _env_bool(
             "SCRAPER_HEADLESS",

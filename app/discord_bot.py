@@ -2,65 +2,61 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
 
 import discord
+from discord import app_commands
 from discord.ext import commands
-from sqlalchemy import select
 
 from app.config import get_settings
-from app.db import SessionLocal, create_tables
+from app.db import create_tables
 from app.discord_embed import build_job_embed_payload
-from app.flow import scrape_and_save
-from app.models import (
-    SentVacancy,
-    Vacancy,
-    clear_sent_vacancies,
-    count_vacancies,
-    count_vacancies_by_source,
-    format_vacancy_filter,
-    get_active_vacancies,
-    get_latest_vacancies,
-    get_or_create_bot_state,
-    get_or_create_user,
-    get_or_create_vacancy_filter,
-    supported_filter_sources,
-    update_bot_offset,
-    update_vacancy_filter,
-)
 from app.normalization.schemas import NormalizedJob
 from app.scrapers.sources import ALL_SOURCES
+from app.services.filters import (
+    get_user_filter_text,
+    supported_sources,
+    update_user_filter_text,
+)
+from app.services.jobs import (
+    get_active_job,
+    get_active_job_count,
+    get_job_stats,
+    list_jobs,
+    reset_user_jobs,
+    set_user_job_state,
+)
+from app.services.scraping import scrape_for_user
 
 
 logger = logging.getLogger(__name__)
 
 MENU_TEXT = """
-**JobHunt Discord Commands**
+Use Discord slash commands. Start typing `/` to see command hints and parameter fields.
 
-**Search**
-`!scrape` - scrape current source from your filters
-`!scrape all` - scrape every supported source
-`!new` - show first unsent matching job
-`!next` - show next matching job
-`!latest [source]` - show latest saved jobs
+Search:
+`/scrape` - scrape current source from your filters
+`/scrape source:all` - scrape every supported source
+`/new` - show first active matching job
+`/next` - show next matching job
+`/latest` - show latest saved jobs
 
-**Filters**
-`!filters` - show current filters
-`!set_source all|djinni|praca_pl`
-`!set_keywords Python FastAPI`
-`!set_experience no_exp,1y`
-`!set_english pre,intermediate,upper`
-`!set_location remote poznan`
-`!include python sql backend`
-`!exclude senior lead manager`
-`!clear_location`
-`!clear_include`
-`!clear_exclude`
+Filters:
+`/filters`
+`/set_source`
+`/set_keywords`
+`/set_experience`
+`/set_english`
+`/set_location`
+`/include`
+`/exclude`
+`/clear_location`
+`/clear_include`
+`/clear_exclude`
 
-**State**
-`!count` - saved jobs count
-`!stats` - saved and active job stats
-`!reset_seen` - show hidden/seen jobs again
+State:
+`/count`
+`/stats`
+`/reset_seen`
 """.strip()
 
 
@@ -72,217 +68,263 @@ def run_discord_bot() -> None:
     create_tables()
 
     intents = discord.Intents.default()
-    intents.message_content = True
-    bot = commands.Bot(
-        command_prefix=settings.discord_command_prefix,
-        intents=intents,
-        help_command=None,
-    )
+    bot = commands.Bot(command_prefix="/", intents=intents, help_command=None)
 
     @bot.event
     async def on_ready() -> None:
-        print(f"Discord bot logged in as {bot.user}")
+        if getattr(bot, "_jobhunt_synced", False):
+            return
 
-    @bot.command(name="start")
-    async def start_command(ctx: commands.Context) -> None:
-        _ensure_discord_user(str(ctx.author.id))
-        await ctx.send(embed=_menu_embed())
+        try:
+            synced_count = await _sync_slash_commands(bot)
+        except discord.DiscordException:
+            logger.exception("Discord slash command sync failed")
+            synced_count = 0
 
-    @bot.command(name="help")
-    async def help_command(ctx: commands.Context) -> None:
-        await ctx.send(embed=_menu_embed())
+        bot._jobhunt_synced = True  # type: ignore[attr-defined]
+        print(f"Discord bot logged in as {bot.user}; synced commands={synced_count}")
 
-    @bot.command(name="menu")
-    async def menu_command(ctx: commands.Context) -> None:
-        await ctx.send(embed=_menu_embed())
+    @bot.tree.command(name="menu", description="Show JobHunt command menu")
+    async def menu_command(interaction: discord.Interaction) -> None:
+        _ensure_discord_user(interaction)
+        await _send_message(interaction, embed=_menu_embed(), ephemeral=True)
 
-    @bot.command(name="count")
-    async def count_command(ctx: commands.Context) -> None:
-        with SessionLocal() as db:
-            total = count_vacancies(db)
-        await ctx.send(f"Saved jobs: `{total}`")
+    @bot.tree.command(name="count", description="Show total saved jobs")
+    async def count_command(interaction: discord.Interaction) -> None:
+        total = get_job_stats()["saved_vacancies"]
+        await _send_message(interaction, f"Saved jobs: `{total}`", ephemeral=True)
 
-    @bot.command(name="stats")
-    async def stats_command(ctx: commands.Context) -> None:
-        chat_id = _chat_id(ctx)
-        with SessionLocal() as db:
-            vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
-            active_total = len(get_active_vacancies(db, chat_id, vacancy_filter))
-            saved_total = count_vacancies(db)
-            by_source = count_vacancies_by_source(db)
+    @bot.tree.command(name="stats", description="Show saved and active job stats")
+    async def stats_command(interaction: discord.Interaction) -> None:
+        user_key = _interaction_user_key(interaction)
+        stats = get_job_stats()
+        active_total = get_active_job_count(user_key)
 
         embed = discord.Embed(title="JobHunt Stats", color=discord.Color.blurple())
-        embed.add_field(name="Saved jobs", value=str(saved_total), inline=True)
+        embed.add_field(name="Saved jobs", value=str(stats["saved_vacancies"]), inline=True)
         embed.add_field(name="Active jobs", value=str(active_total), inline=True)
+        by_source = stats["by_source"]
         sources = "\n".join(
             f"- {source}: {total}" for source, total in sorted(by_source.items())
         )
         embed.add_field(name="By source", value=sources or "No saved jobs yet.", inline=False)
-        await ctx.send(embed=embed)
+        await _send_message(interaction, embed=embed, ephemeral=True)
 
-    @bot.command(name="filters")
-    async def filters_command(ctx: commands.Context) -> None:
-        chat_id = _chat_id(ctx)
-        with SessionLocal() as db:
-            vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
-            filters_text = format_vacancy_filter(vacancy_filter)
-        await ctx.send(f"```text\n{filters_text}\n```")
+    @bot.tree.command(name="filters", description="Show your current job filters")
+    async def filters_command(interaction: discord.Interaction) -> None:
+        user_key = _interaction_user_key(interaction)
+        filters_text = get_user_filter_text(user_key)
+        await _send_message(interaction, f"```text\n{filters_text}\n```", ephemeral=True)
 
-    @bot.command(name="set_source")
-    async def set_source_command(ctx: commands.Context, source: str = "") -> None:
-        if source not in supported_filter_sources():
-            await ctx.send(_unsupported_source_message())
+    @bot.tree.command(name="set_source", description="Set source filter")
+    @app_commands.describe(source="Job source to use")
+    @app_commands.choices(source=_source_choices())
+    async def set_source_command(
+        interaction: discord.Interaction,
+        source: str,
+    ) -> None:
+        await _update_filter(interaction, source=source)
+
+    @bot.tree.command(name="set_keywords", description="Set search keywords")
+    @app_commands.describe(value="Example: Python FastAPI")
+    async def set_keywords_command(
+        interaction: discord.Interaction,
+        value: str,
+    ) -> None:
+        await _update_required_filter(interaction, "search_keywords", value)
+
+    @bot.tree.command(name="set_experience", description="Set experience levels")
+    @app_commands.describe(value="Example: no_exp,1y")
+    async def set_experience_command(
+        interaction: discord.Interaction,
+        value: str,
+    ) -> None:
+        await _update_required_filter(interaction, "experience_levels", value)
+
+    @bot.tree.command(name="set_english", description="Set English levels")
+    @app_commands.describe(value="Example: pre,intermediate,upper")
+    async def set_english_command(
+        interaction: discord.Interaction,
+        value: str,
+    ) -> None:
+        await _update_required_filter(interaction, "english_levels", value)
+
+    @bot.tree.command(name="set_location", description="Set location keywords")
+    @app_commands.describe(value="Example: remote poznan")
+    async def set_location_command(
+        interaction: discord.Interaction,
+        value: str,
+    ) -> None:
+        await _update_required_filter(interaction, "location", value)
+
+    @bot.tree.command(name="include", description="Set required post-filter keywords")
+    @app_commands.describe(value="Example: python sql backend")
+    async def include_command(
+        interaction: discord.Interaction,
+        value: str,
+    ) -> None:
+        await _update_required_filter(interaction, "include_keywords", value)
+
+    @bot.tree.command(name="exclude", description="Set excluded post-filter keywords")
+    @app_commands.describe(value="Example: senior lead manager")
+    async def exclude_command(
+        interaction: discord.Interaction,
+        value: str,
+    ) -> None:
+        await _update_required_filter(interaction, "exclude_keywords", value)
+
+    @bot.tree.command(name="clear_location", description="Clear location filter")
+    async def clear_location_command(interaction: discord.Interaction) -> None:
+        await _update_filter(interaction, location=None)
+
+    @bot.tree.command(name="clear_include", description="Clear required keywords")
+    async def clear_include_command(interaction: discord.Interaction) -> None:
+        await _update_filter(interaction, include_keywords=None)
+
+    @bot.tree.command(name="clear_exclude", description="Clear excluded keywords")
+    async def clear_exclude_command(interaction: discord.Interaction) -> None:
+        await _update_filter(interaction, exclude_keywords=None)
+
+    @bot.tree.command(name="scrape", description="Scrape jobs with your current filters")
+    @app_commands.describe(source="Optional source override")
+    @app_commands.choices(source=_source_choices())
+    async def scrape_command(
+        interaction: discord.Interaction,
+        source: str | None = None,
+    ) -> None:
+        user_key = _interaction_user_key(interaction)
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        try:
+            result = await asyncio.to_thread(
+                scrape_for_user,
+                user_key=user_key,
+                source=source,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Discord scrape command failed")
+            await interaction.followup.send(
+                f"Scrape failed: `{type(exc).__name__}: {exc}`",
+                ephemeral=True,
+            )
             return
-        await _update_filter(ctx, source=source)
 
-    @bot.command(name="set_keywords")
-    async def set_keywords_command(ctx: commands.Context, *, value: str = "") -> None:
-        await _update_required_filter(ctx, "search_keywords", value)
+        await interaction.followup.send(
+            f"Scraped and saved jobs: `{result.saved_count}` from `{result.source}`.",
+            ephemeral=True,
+        )
+        await _send_active_job(interaction, reset_offset=True)
 
-    @bot.command(name="set_experience")
-    async def set_experience_command(ctx: commands.Context, *, value: str = "") -> None:
-        await _update_required_filter(ctx, "experience_levels", value)
+    @bot.tree.command(name="new", description="Show first active matching job")
+    async def new_command(interaction: discord.Interaction) -> None:
+        await _send_active_job(interaction, reset_offset=True)
 
-    @bot.command(name="set_english")
-    async def set_english_command(ctx: commands.Context, *, value: str = "") -> None:
-        await _update_required_filter(ctx, "english_levels", value)
+    @bot.tree.command(name="next", description="Show next active matching job")
+    async def next_command(interaction: discord.Interaction) -> None:
+        await _send_active_job(interaction, offset_delta=1)
 
-    @bot.command(name="set_location")
-    async def set_location_command(ctx: commands.Context, *, value: str = "") -> None:
-        await _update_required_filter(ctx, "location", value)
+    @bot.tree.command(name="prev", description="Show previous active matching job")
+    async def prev_command(interaction: discord.Interaction) -> None:
+        await _send_active_job(interaction, offset_delta=-1)
 
-    @bot.command(name="include")
-    async def include_command(ctx: commands.Context, *, value: str = "") -> None:
-        await _update_required_filter(ctx, "include_keywords", value)
+    @bot.tree.command(name="latest", description="Show latest saved jobs")
+    @app_commands.describe(source="Optional source filter")
+    @app_commands.choices(source=_source_choices())
+    async def latest_command(
+        interaction: discord.Interaction,
+        source: str | None = None,
+    ) -> None:
+        selected_source = None if source in {None, ALL_SOURCES} else source
 
-    @bot.command(name="exclude")
-    async def exclude_command(ctx: commands.Context, *, value: str = "") -> None:
-        await _update_required_filter(ctx, "exclude_keywords", value)
-
-    @bot.command(name="clear_location")
-    async def clear_location_command(ctx: commands.Context) -> None:
-        await _update_filter(ctx, location=None)
-
-    @bot.command(name="clear_include")
-    async def clear_include_command(ctx: commands.Context) -> None:
-        await _update_filter(ctx, include_keywords=None)
-
-    @bot.command(name="clear_exclude")
-    async def clear_exclude_command(ctx: commands.Context) -> None:
-        await _update_filter(ctx, exclude_keywords=None)
-
-    @bot.command(name="scrape")
-    async def scrape_command(ctx: commands.Context, source: str = "") -> None:
-        chat_id = _chat_id(ctx)
-        async with ctx.typing():
-            with SessionLocal() as db:
-                vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
-                filters = vacancy_filter.to_scrape_filters()
-
-            if source:
-                if source not in supported_filter_sources():
-                    await ctx.send(_unsupported_source_message())
-                    return
-                filters = filters.model_copy(update={"source": source})
-
-            try:
-                vacancies = await asyncio.to_thread(
-                    scrape_and_save,
-                    source=filters.source,
-                    filters=filters,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("Discord scrape command failed")
-                await ctx.send(f"Scrape failed: `{type(exc).__name__}: {exc}`")
-                return
-
-        await ctx.send(f"Scraped and saved jobs: `{len(vacancies)}`")
-        await _send_active_job(ctx, reset_offset=True)
-
-    @bot.command(name="new")
-    async def new_command(ctx: commands.Context) -> None:
-        await _send_active_job(ctx, reset_offset=True)
-
-    @bot.command(name="next")
-    async def next_command(ctx: commands.Context) -> None:
-        await _send_active_job(ctx, offset_delta=1)
-
-    @bot.command(name="prev")
-    async def prev_command(ctx: commands.Context) -> None:
-        await _send_active_job(ctx, offset_delta=-1)
-
-    @bot.command(name="latest")
-    async def latest_command(ctx: commands.Context, source: str = "") -> None:
-        selected_source = None if source in {"", ALL_SOURCES} else source
-        if selected_source and selected_source not in supported_filter_sources():
-            await ctx.send(_unsupported_source_message())
-            return
-
-        with SessionLocal() as db:
-            vacancies = get_latest_vacancies(db, limit=5, source=selected_source)
-
+        vacancies = list_jobs(source=selected_source, limit=5)
         if not vacancies:
-            await ctx.send("No saved jobs yet.")
+            await _send_message(interaction, "No saved jobs yet.", ephemeral=True)
             return
 
-        for vacancy in vacancies:
-            await _send_job(ctx, vacancy)
+        await _send_jobs(interaction, vacancies)
 
-    @bot.command(name="reset_seen")
-    async def reset_seen_command(ctx: commands.Context) -> None:
-        chat_id = _chat_id(ctx)
-        with SessionLocal() as db:
-            removed = clear_sent_vacancies(db, chat_id)
-            update_bot_offset(db, chat_id, 0)
-        await ctx.send(f"Returned hidden/seen jobs to active list: `{removed}`")
+    @bot.tree.command(name="reset_seen", description="Return hidden jobs to the active list")
+    async def reset_seen_command(interaction: discord.Interaction) -> None:
+        removed = reset_user_jobs(_interaction_user_key(interaction))
+        await _send_message(
+            interaction,
+            f"Returned hidden/seen jobs to active list: `{removed}`",
+            ephemeral=True,
+        )
 
     bot.run(settings.discord_bot_token)
 
 
 async def _send_active_job(
-    ctx: commands.Context,
+    interaction: discord.Interaction,
     offset_delta: int = 0,
     reset_offset: bool = False,
 ) -> None:
-    chat_id = _chat_id(ctx)
-    with SessionLocal() as db:
-        state = get_or_create_bot_state(db, chat_id)
-        vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
-        active_vacancies = get_active_vacancies(db, chat_id, vacancy_filter)
-        total = len(active_vacancies)
+    result = get_active_job(
+        user_key=_interaction_user_key(interaction),
+        offset_delta=offset_delta,
+        reset_offset=reset_offset,
+    )
+    if result.vacancy is None:
+        await _send_message(
+            interaction,
+            "No active jobs for current filters.",
+            ephemeral=True,
+        )
+        return
 
-        if total == 0:
-            update_bot_offset(db, chat_id, 0)
-            await ctx.send("No active jobs for current filters.")
-            return
+    await _send_job(
+        interaction,
+        result.vacancy,
+        position=result.position,
+        total=result.total,
+    )
 
-        current_offset = 0 if reset_offset else state.current_offset + offset_delta
-        if current_offset < 0:
-            current_offset = total - 1
-        if current_offset >= total:
-            current_offset = 0
 
-        vacancy = active_vacancies[current_offset]
-        update_bot_offset(db, chat_id, current_offset)
-        position = current_offset + 1
+async def _send_jobs(
+    interaction: discord.Interaction,
+    vacancies,
+) -> None:
+    destination = await _destination_channel(interaction)
+    if _is_interaction_channel(interaction, destination):
+        for vacancy in vacancies:
+            await _send_job(interaction, vacancy)
+        return
 
-    await _send_job(ctx, vacancy, position=position, total=total)
+    for vacancy in vacancies:
+        await destination.send(
+            embed=_vacancy_to_embed(vacancy),
+            view=JobActionView(vacancy.id, vacancy.url),
+        )
+    await _send_message(
+        interaction,
+        f"Sent `{len(vacancies)}` jobs to the configured Discord channel.",
+        ephemeral=True,
+    )
 
 
 async def _send_job(
-    ctx: commands.Context,
-    vacancy: Vacancy,
+    interaction: discord.Interaction,
+    vacancy,
     position: int | None = None,
     total: int | None = None,
 ) -> None:
     embed = _vacancy_to_embed(vacancy)
     if position is not None and total is not None:
-        embed.set_footer(text=f"{embed.footer.text} | {position}/{total}")
-    destination = await _destination_channel(ctx)
-    await destination.send(embed=embed, view=JobActionView(vacancy.id, vacancy.url))
+        footer = embed.footer.text or ""
+        embed.set_footer(text=f"{footer} | {position}/{total}")
+
+    destination = await _destination_channel(interaction)
+    view = JobActionView(vacancy.id, vacancy.url)
+    if _is_interaction_channel(interaction, destination):
+        await _send_message(interaction, embed=embed, view=view)
+        return
+
+    await destination.send(embed=embed, view=view)
+    await _send_message(interaction, "Sent to the configured Discord channel.", ephemeral=True)
 
 
-def _vacancy_to_embed(vacancy: Vacancy) -> discord.Embed:
+def _vacancy_to_embed(vacancy) -> discord.Embed:
     normalized = NormalizedJob.model_validate(vacancy.normalized_data)
     payload = build_job_embed_payload(normalized)
     return discord.Embed.from_dict(payload["embeds"][0])
@@ -316,9 +358,9 @@ class JobActionView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        _set_user_job_state(
-            chat_id=_interaction_chat_id(interaction),
-            vacancy_id=self.vacancy_id,
+        set_user_job_state(
+            user_key=_interaction_user_key(interaction),
+            job_id=self.vacancy_id,
             is_saved=1,
             is_viewed=1,
         )
@@ -330,9 +372,9 @@ class JobActionView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        _set_user_job_state(
-            chat_id=_interaction_chat_id(interaction),
-            vacancy_id=self.vacancy_id,
+        set_user_job_state(
+            user_key=_interaction_user_key(interaction),
+            job_id=self.vacancy_id,
             is_hidden=1,
             is_viewed=1,
         )
@@ -343,106 +385,128 @@ async def _respond_with_offset(
     interaction: discord.Interaction,
     offset_delta: int,
 ) -> None:
-    chat_id = _interaction_chat_id(interaction)
-    with SessionLocal() as db:
-        state = get_or_create_bot_state(db, chat_id)
-        vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
-        active_vacancies = get_active_vacancies(db, chat_id, vacancy_filter)
-        total = len(active_vacancies)
-        if total == 0:
-            await interaction.response.send_message(
-                "No active jobs for current filters.",
-                ephemeral=True,
-            )
-            return
+    result = get_active_job(
+        user_key=_interaction_user_key(interaction),
+        offset_delta=offset_delta,
+    )
+    if result.vacancy is None:
+        await interaction.response.send_message(
+            "No active jobs for current filters.",
+            ephemeral=True,
+        )
+        return
 
-        current_offset = state.current_offset + offset_delta
-        if current_offset < 0:
-            current_offset = total - 1
-        if current_offset >= total:
-            current_offset = 0
-
-        vacancy = active_vacancies[current_offset]
-        update_bot_offset(db, chat_id, current_offset)
-
-    embed = _vacancy_to_embed(vacancy)
-    embed.set_footer(text=f"{embed.footer.text} | {current_offset + 1}/{total}")
+    embed = _vacancy_to_embed(result.vacancy)
+    footer = embed.footer.text or ""
+    embed.set_footer(text=f"{footer} | {result.position}/{result.total}")
     await interaction.response.edit_message(
         embed=embed,
-        view=JobActionView(vacancy.id, vacancy.url),
+        view=JobActionView(result.vacancy.id, result.vacancy.url),
     )
 
 
-def _set_user_job_state(
-    *,
-    chat_id: str,
-    vacancy_id: int,
-    is_saved: int | None = None,
-    is_viewed: int | None = None,
-    is_hidden: int | None = None,
-) -> None:
-    with SessionLocal() as db:
-        user = get_or_create_user(db, chat_id)
-        vacancy_filter = get_or_create_vacancy_filter(db, chat_id)
-        row = db.execute(
-            select(SentVacancy).where(
-                SentVacancy.chat_id == chat_id,
-                SentVacancy.vacancy_id == vacancy_id,
-            )
-        ).scalar_one_or_none()
-        if row is None:
-            row = SentVacancy(
-                user_id=user.id,
-                chat_id=chat_id,
-                vacancy_id=vacancy_id,
-                filter_id=vacancy_filter.id,
-            )
-            db.add(row)
-
-        if is_saved is not None:
-            row.is_saved = is_saved
-        if is_viewed is not None:
-            row.is_viewed = is_viewed
-        if is_hidden is not None:
-            row.is_hidden = is_hidden
-
-        db.commit()
-
-
 async def _update_required_filter(
-    ctx: commands.Context,
+    interaction: discord.Interaction,
     field_name: str,
     value: str,
 ) -> None:
     value = value.strip()
     if not value:
-        await ctx.send(f"Value is empty. Example: `!{ctx.command.name} Python`")
+        await _send_message(interaction, "Value is empty.", ephemeral=True)
         return
-    await _update_filter(ctx, **{field_name: value})
+    await _update_filter(interaction, **{field_name: value})
 
 
-async def _update_filter(ctx: commands.Context, **values: str | None) -> None:
-    chat_id = _chat_id(ctx)
-    with SessionLocal() as db:
-        vacancy_filter = update_vacancy_filter(db, chat_id, **values)
-        update_bot_offset(db, chat_id, 0)
-        filters_text = format_vacancy_filter(vacancy_filter)
-    await ctx.send(f"Filters updated:\n```text\n{filters_text}\n```")
+async def _update_filter(
+    interaction: discord.Interaction,
+    **values: str | None,
+) -> None:
+    try:
+        filters_text = update_user_filter_text(
+            _interaction_user_key(interaction),
+            **values,
+        )
+    except ValueError as exc:
+        await _send_message(interaction, str(exc), ephemeral=True)
+        return
+
+    await _send_message(
+        interaction,
+        f"Filters updated:\n```text\n{filters_text}\n```",
+        ephemeral=True,
+    )
 
 
-def _ensure_discord_user(user_id: str) -> None:
-    chat_id = f"discord:{user_id}"
-    with SessionLocal() as db:
-        get_or_create_user(db, chat_id)
-        get_or_create_bot_state(db, chat_id)
-        get_or_create_vacancy_filter(db, chat_id)
+async def _send_message(
+    interaction: discord.Interaction,
+    content: str | None = None,
+    *,
+    embed: discord.Embed | None = None,
+    view: discord.ui.View | None = None,
+    ephemeral: bool = False,
+) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(
+            content=content,
+            embed=embed,
+            view=view,
+            ephemeral=ephemeral,
+        )
+        return
+
+    await interaction.response.send_message(
+        content=content,
+        embed=embed,
+        view=view,
+        ephemeral=ephemeral,
+    )
 
 
-def _chat_id(ctx: commands.Context) -> str:
-    return f"discord:{ctx.author.id}"
+async def _destination_channel(interaction: discord.Interaction):
+    settings = get_settings()
+    if settings.discord_channel_id:
+        try:
+            channel_id = int(settings.discord_channel_id)
+        except ValueError:
+            channel_id = None
+
+        if channel_id is not None:
+            channel = interaction.client.get_channel(channel_id)
+            if channel is not None:
+                return channel
+            try:
+                return await interaction.client.fetch_channel(channel_id)
+            except discord.DiscordException:
+                pass
+
+    return interaction.channel
 
 
-def _interaction_chat_id(interaction: discord.Interaction) -> str:
+async def _sync_slash_commands(bot: commands.Bot) -> int:
+    settings = get_settings()
+    if settings.discord_guild_id:
+        try:
+            guild_id = int(settings.discord_guild_id)
+        except ValueError:
+            logger.warning(
+                "Invalid DISCORD_GUILD_ID=%s; syncing global commands",
+                settings.discord_guild_id,
+            )
+        else:
+            guild = discord.Object(id=guild_id)
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            return len(synced)
+
+    synced = await bot.tree.sync()
+    return len(synced)
+
+
+def _ensure_discord_user(interaction: discord.Interaction) -> None:
+    get_active_job_count(_interaction_user_key(interaction))
+
+
+def _interaction_user_key(interaction: discord.Interaction) -> str:
     return f"discord:{interaction.user.id}"
 
 
@@ -456,24 +520,12 @@ def _menu_embed() -> discord.Embed:
     return embed
 
 
-def _unsupported_source_message() -> str:
-    sources = ", ".join(sorted(supported_filter_sources()))
-    return f"Unsupported source. Use one of: `{sources}`"
+def _source_choices() -> list[app_commands.Choice[str]]:
+    return [
+        app_commands.Choice(name=source, value=source)
+        for source in supported_sources()
+    ]
 
 
-async def _destination_channel(ctx: commands.Context):
-    settings = get_settings()
-    if settings.discord_channel_id:
-        try:
-            channel_id = int(settings.discord_channel_id)
-        except ValueError:
-            channel_id = None
-        if channel_id is not None:
-            channel = ctx.bot.get_channel(channel_id)
-            if channel is not None:
-                return channel
-            try:
-                return await ctx.bot.fetch_channel(channel_id)
-            except discord.DiscordException:
-                return ctx.channel
-    return ctx.channel
+def _is_interaction_channel(interaction: discord.Interaction, channel) -> bool:
+    return getattr(channel, "id", None) == interaction.channel_id

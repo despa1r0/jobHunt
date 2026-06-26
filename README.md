@@ -200,3 +200,39 @@ GET /vacancies?limit=10
 GET /vacancies?source=djinni&limit=5
 GET /vacancies/{vacancy_id}
 ```
+
+## Discord Preview
+
+Build a sample Discord embed payload from normalized job data:
+
+```powershell
+.venv\Scripts\python.exe manual\preview_discord_embed.py
+```
+
+The preview prints JSON shaped for Discord webhooks:
+
+```json
+{
+  "embeds": [
+    {
+      "title": "Junior Python Developer",
+      "url": "https://example.com/job/123",
+      "description": "Junior backend role focused on Python APIs and SQL-backed services.",
+      "fields": []
+    }
+  ]
+}
+```
+
+For Discord notifications, the simplest setup is a webhook:
+
+```env
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+```
+
+For a full Discord bot with commands and interactions, also prepare:
+
+```env
+DISCORD_BOT_TOKEN=...
+DISCORD_CHANNEL_ID=...
+```

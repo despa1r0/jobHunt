@@ -107,6 +107,7 @@ docker compose exec bot-worker python manual/reset_db.py --yes
 ```
 
 This drops and recreates ORM tables: `users`, `search_filters`, `jobs`, `user_jobs`, and `bot_states`.
+It also removes legacy tables: `vacancies`, `vacancy_filters`, and `sent_vacancies`.
 
 ## Filters
 

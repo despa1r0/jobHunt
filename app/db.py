@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import get_settings
@@ -30,4 +30,12 @@ def reset_tables() -> None:
     import app.models  # noqa: F401
 
     Base.metadata.drop_all(bind=engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "DROP TABLE IF EXISTS "
+                "sent_vacancies, vacancy_filters, vacancies "
+                "CASCADE"
+            )
+        )
     Base.metadata.create_all(bind=engine)

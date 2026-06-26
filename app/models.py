@@ -274,7 +274,7 @@ class VacancyFilter(Base):
 class SentVacancy(Base):
     __tablename__ = "user_jobs"
     __table_args__ = (
-        UniqueConstraint("chat_id", "vacancy_id", name="uq_sent_vacancy_chat"),
+        UniqueConstraint("chat_id", "vacancy_id", name="uq_user_jobs_chat_vacancy"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)

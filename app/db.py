@@ -29,13 +29,7 @@ def create_tables() -> None:
 def reset_tables() -> None:
     import app.models  # noqa: F401
 
-    Base.metadata.drop_all(bind=engine)
     with engine.begin() as connection:
-        connection.execute(
-            text(
-                "DROP TABLE IF EXISTS "
-                "sent_vacancies, vacancy_filters, vacancies "
-                "CASCADE"
-            )
-        )
+        connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
     Base.metadata.create_all(bind=engine)

@@ -4,6 +4,9 @@ Use null when information is missing.
 Use [] when a list is empty.
 Do not change the vacancy URL.
 Separate required and optional requirements.
+Extract required_skills, optional_skills, languages, responsibilities, requirements, and benefits from the description when they are present.
+Do not put the whole description into summary. Summary must be 1-2 concise sentences.
+Keep each list item short and useful. Prefer concrete technologies, tools, duties, and requirements over generic marketing text.
 If the vacancy mentions several offices or countries, keep them in location.
 If the vacancy is remote but also lists offices, set remote_type to remote or hybrid from the text and keep the office locations in location.
 Do not treat remote_type as a replacement for location.
@@ -39,6 +42,8 @@ Schema example:
   "benefits": [],
   "summary": "Short vacancy summary"
 }
+
+Return all keys from the schema. If the input contains bullet lists or section text, convert them into the matching arrays.
 
 Input:
 {input_text}

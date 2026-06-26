@@ -6,9 +6,9 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from app.config import get_settings
-from app.normalization.cleaner import compact_llm_input
+from app.normalization.cleaner import clean_text, compact_llm_input
 from app.normalization.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
-from app.normalization.schemas import NormalizedJob, Salary
+from app.normalization.schemas import Language, NormalizedJob, Salary
 
 if TYPE_CHECKING:
     from app.models import JobCreate
@@ -16,16 +16,107 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+KNOWN_SKILLS = [
+    "Python",
+    "Django",
+    "FastAPI",
+    "Flask",
+    "SQL",
+    "PostgreSQL",
+    "MySQL",
+    "MongoDB",
+    "Redis",
+    "Docker",
+    "Kubernetes",
+    "AWS",
+    "Azure",
+    "GCP",
+    "Linux",
+    "Git",
+    "REST",
+    "GraphQL",
+    "API",
+    "JavaScript",
+    "TypeScript",
+    "React",
+    "Vue",
+    "Angular",
+    "HTML",
+    "CSS",
+    "Selenium",
+    "Playwright",
+    "Pytest",
+    "Pandas",
+    "NumPy",
+    "TensorFlow",
+    "PyTorch",
+    "Machine Learning",
+    "AI",
+    "CI/CD",
+    "Jenkins",
+    "GitHub Actions",
+    "RabbitMQ",
+    "Kafka",
+    "Celery",
+]
+
+OPTIONAL_SECTION_MARKERS = (
+    "nice to have",
+    "will be a plus",
+    "would be a plus",
+    "mile widziane",
+    "буде плюсом",
+    "будет плюсом",
+)
+
+REQUIREMENT_SECTION_MARKERS = (
+    "requirements",
+    "required skills",
+    "what we expect",
+    "about you",
+    "nasze wymagania",
+    "wymagania",
+    "вимоги",
+    "требования",
+)
+
+RESPONSIBILITY_SECTION_MARKERS = (
+    "responsibilities",
+    "what you will do",
+    "what you'll do",
+    "your tasks",
+    "zakres obowiązków",
+    "obowiązki",
+    "відповідальність",
+    "обязанности",
+)
+
+BENEFIT_SECTION_MARKERS = (
+    "benefits",
+    "what we offer",
+    "we offer",
+    "oferujemy",
+    "co oferujemy",
+    "що ми пропонуємо",
+    "что мы предлагаем",
+)
+
 
 def normalize_job_payload(payload: "JobCreate") -> NormalizedJob:
     settings = get_settings()
     if getattr(settings, "normalization_use_gpt4free", False):
         try:
-            return _normalize_with_gpt4free(payload)
+            normalized = _normalize_with_gpt4free(payload)
+            normalized = _enrich_normalized_job(payload, normalized)
+            _log_normalization_result(payload, normalized, method="gpt4free")
+            return normalized
         except Exception as exc:  # noqa: BLE001
             logger.warning("gpt4free normalization failed, using fallback: %s", exc)
 
-    return normalize_without_llm(payload)
+    normalized = normalize_without_llm(payload)
+    normalized = _enrich_normalized_job(payload, normalized)
+    _log_normalization_result(payload, normalized, method="fallback")
+    return normalized
 
 
 def normalize_without_llm(payload: "JobCreate") -> NormalizedJob:
@@ -75,6 +166,152 @@ def _normalize_with_gpt4free(payload: "JobCreate") -> NormalizedJob:
     )
     raw_json = _extract_json_object(str(response))
     return NormalizedJob.model_validate_json(raw_json)
+
+
+def _enrich_normalized_job(
+    payload: "JobCreate",
+    normalized: NormalizedJob,
+) -> NormalizedJob:
+    text = clean_text(payload.description_raw)
+    section_items = _extract_section_items(text)
+    required_skills = normalized.required_skills or _extract_skills(text)
+    optional_skills = normalized.optional_skills or _extract_skills(
+        "\n".join(section_items["optional_skills"])
+    )
+
+    updates: dict[str, Any] = {}
+    if not normalized.required_skills and required_skills:
+        updates["required_skills"] = required_skills
+    if not normalized.optional_skills and optional_skills:
+        updates["optional_skills"] = [
+            skill for skill in optional_skills if skill not in required_skills
+        ]
+    if not normalized.requirements and section_items["requirements"]:
+        updates["requirements"] = section_items["requirements"]
+    if not normalized.responsibilities and section_items["responsibilities"]:
+        updates["responsibilities"] = section_items["responsibilities"]
+    if not normalized.benefits and section_items["benefits"]:
+        updates["benefits"] = section_items["benefits"]
+    if not normalized.languages:
+        languages = _extract_languages(text)
+        if languages:
+            updates["languages"] = languages
+
+    if not updates:
+        return normalized
+    return normalized.model_copy(update=updates)
+
+
+def _extract_skills(text: str | None) -> list[str]:
+    if not text:
+        return []
+
+    found: list[str] = []
+    lower_text = text.lower()
+    for skill in KNOWN_SKILLS:
+        pattern = r"(?<![\w+#.-])" + re.escape(skill.lower()) + r"(?![\w+#.-])"
+        if re.search(pattern, lower_text) and skill not in found:
+            found.append(skill)
+    return found[:12]
+
+
+def _extract_section_items(text: str | None) -> dict[str, list[str]]:
+    sections = {
+        "requirements": [],
+        "responsibilities": [],
+        "benefits": [],
+        "optional_skills": [],
+    }
+    if not text:
+        return sections
+
+    current_key: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip(" \t-*•")
+        if not line:
+            continue
+
+        detected_key = _detect_section_key(line)
+        if detected_key is not None:
+            current_key = detected_key
+            remainder = _strip_heading_prefix(line)
+            if remainder:
+                _append_section_item(sections[current_key], remainder)
+            continue
+
+        if current_key is not None:
+            _append_section_item(sections[current_key], line)
+
+    return sections
+
+
+def _detect_section_key(line: str) -> str | None:
+    normalized = line.lower().strip(" :")
+    checks = [
+        ("optional_skills", OPTIONAL_SECTION_MARKERS),
+        ("requirements", REQUIREMENT_SECTION_MARKERS),
+        ("responsibilities", RESPONSIBILITY_SECTION_MARKERS),
+        ("benefits", BENEFIT_SECTION_MARKERS),
+    ]
+    for key, markers in checks:
+        if any(normalized.startswith(marker) for marker in markers):
+            return key
+    return None
+
+
+def _strip_heading_prefix(line: str) -> str:
+    if ":" not in line:
+        return ""
+    return line.split(":", 1)[1].strip(" -*•")
+
+
+def _append_section_item(items: list[str], value: str) -> None:
+    value = " ".join(value.split())
+    if not value or len(value) < 2:
+        return
+    if len(value) > 220:
+        value = value[:217].rsplit(" ", 1)[0] + "..."
+    if value not in items and len(items) < 8:
+        items.append(value)
+
+
+def _extract_languages(text: str | None) -> list[Language]:
+    if not text:
+        return []
+
+    languages: list[Language] = []
+    patterns = [
+        (r"\bEnglish\b[^\n,;.]{0,30}\b(A1|A2|B1|B2|C1|C2)\b", "English"),
+        (r"\bPolish\b[^\n,;.]{0,30}\b(A1|A2|B1|B2|C1|C2)\b", "Polish"),
+        (r"\bUkrainian\b[^\n,;.]{0,30}\b(A1|A2|B1|B2|C1|C2)\b", "Ukrainian"),
+    ]
+    for pattern, name in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            languages.append(Language(name=name, level=match.group(1).upper()))
+
+    if not languages and re.search(r"\benglish\b", text, flags=re.IGNORECASE):
+        languages.append(Language(name="English", level=None))
+    return languages
+
+
+def _log_normalization_result(
+    payload: "JobCreate",
+    normalized: NormalizedJob,
+    method: str,
+) -> None:
+    logger.info(
+        "Job normalized: method=%s source=%s title=%r skills=%s requirements=%s "
+        "responsibilities=%s benefits=%s languages=%s",
+        method,
+        payload.source,
+        payload.title,
+        len(normalized.required_skills) + len(normalized.optional_skills),
+        len(normalized.requirements),
+        len(normalized.responsibilities),
+        len(normalized.benefits),
+        len(normalized.languages),
+    )
 
 
 def normalized_to_json(value: NormalizedJob | dict[str, Any] | None) -> dict[str, Any]:

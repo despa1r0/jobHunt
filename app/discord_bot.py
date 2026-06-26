@@ -34,8 +34,8 @@ MENU_TEXT = """
 Use Discord slash commands. Start typing `/` to see command hints and parameter fields.
 
 Search:
-`/scrape` - scrape current source from your filters
-`/scrape source:all` - scrape every supported source
+`/scrape` - start background scrape with your current filters
+`/scrape source:all` - start background scrape for every supported source
 `/new` - show first active matching job
 `/next` - show next matching job
 `/latest` - show latest saved jobs
@@ -69,6 +69,7 @@ def run_discord_bot() -> None:
 
     intents = discord.Intents.default()
     bot = commands.Bot(command_prefix="/", intents=intents, help_command=None)
+    running_scrapes: set[str] = set()
 
     @bot.event
     async def on_ready() -> None:
@@ -193,27 +194,32 @@ def run_discord_bot() -> None:
         source: str | None = None,
     ) -> None:
         user_key = _interaction_user_key(interaction)
-        await interaction.response.defer(thinking=True, ephemeral=True)
-
-        try:
-            result = await asyncio.to_thread(
-                scrape_for_user,
-                user_key=user_key,
-                source=source,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Discord scrape command failed")
-            await interaction.followup.send(
-                f"Scrape failed: `{type(exc).__name__}: {exc}`",
+        scrape_key = "global"
+        if scrape_key in running_scrapes:
+            await _send_message(
+                interaction,
+                "Scrape is already running. I will post the result when it finishes.",
                 ephemeral=True,
             )
             return
 
-        await interaction.followup.send(
-            f"Scraped and saved jobs: `{result.saved_count}` from `{result.source}`.",
+        running_scrapes.add(scrape_key)
+        requested_source = source or "current filters"
+        await _send_message(
+            interaction,
+            f"Scrape started in background for `{requested_source}`. "
+            "I will post the result in the channel when it finishes.",
             ephemeral=True,
         )
-        await _send_active_job(interaction, reset_offset=True)
+        task = asyncio.create_task(
+            _run_scrape_background(
+                bot=bot,
+                user_key=user_key,
+                source=source,
+                destination_channel_id=interaction.channel_id,
+            )
+        )
+        task.add_done_callback(lambda _task: running_scrapes.discard(scrape_key))
 
     @bot.tree.command(name="new", description="Show first active matching job")
     async def new_command(interaction: discord.Interaction) -> None:
@@ -322,6 +328,77 @@ async def _send_job(
 
     await destination.send(embed=embed, view=view)
     await _send_message(interaction, "Sent to the configured Discord channel.", ephemeral=True)
+
+
+async def _run_scrape_background(
+    *,
+    bot: commands.Bot,
+    user_key: str,
+    source: str | None,
+    destination_channel_id: int | None,
+) -> None:
+    destination = await _channel_by_id(bot, destination_channel_id)
+    try:
+        result = await asyncio.to_thread(
+            scrape_for_user,
+            user_key=user_key,
+            source=source,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Discord background scrape failed")
+        await _send_channel_message(
+            destination,
+            f"Scrape failed: `{type(exc).__name__}: {exc}`",
+        )
+        return
+
+    await _send_channel_message(
+        destination,
+        f"Scrape finished: `{result.saved_count}` jobs saved from `{result.source}`.",
+    )
+
+    active_job = get_active_job(user_key=user_key, reset_offset=True)
+    if active_job.vacancy is None:
+        await _send_channel_message(destination, "No active jobs for current filters.")
+        return
+
+    await _send_job_to_channel(
+        destination,
+        active_job.vacancy,
+        position=active_job.position,
+        total=active_job.total,
+    )
+
+
+async def _send_job_to_channel(
+    channel,
+    vacancy,
+    position: int | None = None,
+    total: int | None = None,
+) -> None:
+    if channel is None:
+        logger.warning("Could not send job %s because destination channel is missing", vacancy.id)
+        return
+
+    embed = _vacancy_to_embed(vacancy)
+    if position is not None and total is not None:
+        footer = embed.footer.text or ""
+        embed.set_footer(text=f"{footer} | {position}/{total}")
+
+    try:
+        await channel.send(embed=embed, view=JobActionView(vacancy.id, vacancy.url))
+    except discord.DiscordException:
+        logger.exception("Could not send Discord job message: job_id=%s", vacancy.id)
+
+
+async def _send_channel_message(channel, content: str) -> None:
+    if channel is None:
+        logger.warning("Could not send Discord channel message: %s", content)
+        return
+    try:
+        await channel.send(content)
+    except discord.DiscordException:
+        logger.exception("Could not send Discord channel message")
 
 
 def _vacancy_to_embed(vacancy) -> discord.Embed:
@@ -480,6 +557,32 @@ async def _destination_channel(interaction: discord.Interaction):
                 pass
 
     return interaction.channel
+
+
+async def _channel_by_id(
+    bot: commands.Bot,
+    channel_id: int | None,
+):
+    settings = get_settings()
+    selected_channel_id = channel_id
+    if settings.discord_channel_id:
+        try:
+            selected_channel_id = int(settings.discord_channel_id)
+        except ValueError:
+            logger.warning("Invalid DISCORD_CHANNEL_ID=%s", settings.discord_channel_id)
+
+    if selected_channel_id is None:
+        return None
+
+    channel = bot.get_channel(selected_channel_id)
+    if channel is not None:
+        return channel
+
+    try:
+        return await bot.fetch_channel(selected_channel_id)
+    except discord.DiscordException:
+        logger.exception("Could not fetch Discord channel: id=%s", selected_channel_id)
+        return None
 
 
 async def _sync_slash_commands(bot: commands.Bot) -> int:

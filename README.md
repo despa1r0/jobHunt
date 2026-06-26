@@ -239,6 +239,10 @@ DISCORD_GUILD_ID=...
 NORMALIZATION_USE_GPT4FREE=true
 ```
 
+No extra environment variables are required for background scraping. `/scrape`
+responds immediately, runs the scraper in the bot process, and posts the result
+to `DISCORD_CHANNEL_ID` when finished.
+
 The bot needs these channel permissions:
 
 ```text
@@ -280,8 +284,8 @@ Useful Discord commands:
 /clear_location
 /clear_include
 /clear_exclude
-/scrape
-/scrape source:all
+/scrape                 starts background scrape with current filters
+/scrape source:all      starts background scrape for every source
 /new
 /next
 /prev

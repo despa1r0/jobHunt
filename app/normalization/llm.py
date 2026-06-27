@@ -104,7 +104,13 @@ OPTIONAL_SECTION_MARKERS = (
 REQUIREMENT_SECTION_MARKERS = (
     "requirements",
     "required skills",
+    "what are we looking for",
+    "what we are looking for",
+    "what we're looking for",
     "what we expect",
+    "candidate profile",
+    "profile",
+    "qualifications",
     "about you",
     "nasze wymagania",
     "wymagania",
@@ -339,9 +345,9 @@ def _sanitize_list_value(value: Any, key: str) -> list[Any]:
                 )
             elif isinstance(item, str) and item.strip():
                 languages.append({"name": item.strip()[:64], "level": None})
-        return languages[:8]
+        return languages[:10]
 
-    return [str(item).strip() for item in value if str(item).strip()][:12]
+    return [str(item).strip() for item in value if str(item).strip()][:20]
 
 
 def _sanitize_enum(value: Any, allowed_values: set[str]) -> str | None:
@@ -500,19 +506,32 @@ def _extract_languages(text: str | None) -> list[Language]:
         return []
 
     languages: list[Language] = []
+    level_pattern = (
+        r"(A1|A2|B1|B2|C1|C2|upper[- ]?intermediate|pre[- ]?intermediate|"
+        r"intermediate|advanced|fluent|native)"
+    )
     patterns = [
-        (r"\bEnglish\b[^\n,;.]{0,30}\b(A1|A2|B1|B2|C1|C2)\b", "English"),
-        (r"\bPolish\b[^\n,;.]{0,30}\b(A1|A2|B1|B2|C1|C2)\b", "Polish"),
-        (r"\bUkrainian\b[^\n,;.]{0,30}\b(A1|A2|B1|B2|C1|C2)\b", "Ukrainian"),
+        (rf"\bEnglish\b[^\n,;.:]{{0,60}}?\b{level_pattern}\b", "English"),
+        (rf"\bPolish\b[^\n,;.:]{{0,60}}?\b{level_pattern}\b", "Polish"),
+        (rf"\bUkrainian\b[^\n,;.:]{{0,60}}?\b{level_pattern}\b", "Ukrainian"),
+        (rf"\bRussian\b[^\n,;.:]{{0,60}}?\b{level_pattern}\b", "Russian"),
     ]
     for pattern, name in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
-            languages.append(Language(name=name, level=match.group(1).upper()))
+            languages.append(Language(name=name, level=_normalize_language_level(match.group(1))))
 
     if not languages and re.search(r"\benglish\b", text, flags=re.IGNORECASE):
         languages.append(Language(name="English", level=None))
     return languages
+
+
+def _normalize_language_level(value: str) -> str:
+    normalized = value.strip().replace("_", "-").lower()
+    cefr = normalized.upper()
+    if cefr in {"A1", "A2", "B1", "B2", "C1", "C2"}:
+        return cefr
+    return normalized.replace("-", " ").title()
 
 
 def _log_normalization_result(

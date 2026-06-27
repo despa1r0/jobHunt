@@ -352,15 +352,20 @@ async def _run_scrape_background(
         )
         return
 
-    await _send_channel_message(
-        destination,
-        f"Scrape finished: `{result.saved_count}` jobs saved from `{result.source}`.",
-    )
-
     active_job = get_active_job(user_key=user_key, reset_offset=True)
     if active_job.vacancy is None:
-        await _send_channel_message(destination, "No active jobs for current filters.")
+        await _send_channel_message(
+            destination,
+            f"Scrape finished: `{result.saved_count}` jobs saved from `{result.source}`. "
+            "No active jobs for current filters.",
+        )
         return
+
+    await _send_channel_message(
+        destination,
+        f"Scrape finished: `{result.saved_count}` jobs saved from `{result.source}`. "
+        f"Active list now has `{active_job.total}` jobs.",
+    )
 
     await _send_job_to_channel(
         destination,

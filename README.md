@@ -297,6 +297,8 @@ Useful Discord commands:
 ```
 
 Vacancy embeds include buttons: `Open`, `Prev`, `Next`, `Save`, and `Hide`.
+The footer counter, for example `5/85`, means position 5 in the current active
+list for your filters. It is not the number of jobs from the latest scrape run.
 
 ## Normalization Provider
 

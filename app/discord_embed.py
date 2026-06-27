@@ -9,6 +9,10 @@ DISCORD_GREEN = 0x2ECC71
 MAX_FIELD_VALUE = 1024
 MAX_DESCRIPTION = 4096
 MAX_TITLE = 256
+SOURCE_THUMBNAILS = {
+    "djinni": "https://djinni.co/favicon.ico",
+    "praca_pl": "https://www.praca.pl/favicon.ico",
+}
 
 
 def build_job_embed_payload(job_data: NormalizedJob | dict[str, Any]) -> dict[str, Any]:
@@ -23,10 +27,16 @@ def build_job_embed_payload(job_data: NormalizedJob | dict[str, Any]) -> dict[st
         "description": _truncate(job.summary or "No summary provided.", MAX_DESCRIPTION),
         "color": DISCORD_GREEN,
         "fields": _build_fields(job),
+        "author": {
+            "name": f"{job.source} normalized job",
+        },
         "footer": {
             "text": f"{job.source} job alert",
         },
     }
+    thumbnail_url = SOURCE_THUMBNAILS.get(job.source)
+    if thumbnail_url:
+        embed["thumbnail"] = {"url": thumbnail_url}
     return {"embeds": [embed]}
 
 
@@ -38,11 +48,11 @@ def _build_fields(job: NormalizedJob) -> list[dict[str, Any]]:
     _add_field(fields, "Work mode", job.remote_type)
     _add_field(fields, "Seniority", job.seniority)
     _add_field(fields, "Salary", _format_salary(job.salary))
-    _add_field(fields, "Required skills", _format_list(job.required_skills))
-    _add_field(fields, "Optional skills", _format_list(job.optional_skills))
-    _add_field(fields, "Languages", _format_languages(job))
     _add_field(fields, "Requirements", _format_list(job.requirements, bullet=True))
     _add_field(fields, "Responsibilities", _format_list(job.responsibilities, bullet=True))
+    _add_field(fields, "Required skills", _format_list(job.required_skills, bullet=True))
+    _add_field(fields, "Optional skills", _format_list(job.optional_skills, bullet=True))
+    _add_field(fields, "Languages", _format_languages(job))
     _add_field(fields, "Benefits", _format_list(job.benefits, bullet=True))
 
     return fields
@@ -105,7 +115,9 @@ def _format_languages(job: NormalizedJob) -> str | None:
         for language in job.languages
         if language.name.strip()
     ]
-    return "\n".join(values) or None
+    if not values:
+        return None
+    return "\n".join(f"- {value}" for value in values)
 
 
 def _truncate(value: str, limit: int) -> str:

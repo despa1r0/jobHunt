@@ -5,8 +5,11 @@ Use [] when a list is empty.
 Do not change the vacancy URL.
 Separate required and optional requirements.
 Extract required_skills, optional_skills, languages, responsibilities, requirements, and benefits from the description when they are present.
+Do not reduce requirements to only technology names. Preserve years of experience, degree requirements, certifications, language levels, and other qualifiers.
+If the input has headings like "What are we looking for?", "Requirements", "Candidate profile", or similar, put the complete bullet items under requirements.
+Extract languages from both CEFR levels (A1-C2) and words like pre-intermediate, intermediate, upper-intermediate, advanced, fluent, native.
 Do not put the whole description into summary. Summary must be 1-2 concise sentences.
-Keep each list item short and useful. Prefer concrete technologies, tools, duties, and requirements over generic marketing text.
+Keep skill lists focused on concrete technologies/tools, but keep requirements/responsibilities/benefits as complete useful bullet items from the vacancy text.
 If the vacancy mentions several offices or countries, keep them in location.
 If the vacancy is remote but also lists offices, set remote_type to remote or hybrid from the text and keep the office locations in location.
 Do not treat remote_type as a replacement for location.
@@ -44,6 +47,7 @@ Schema example:
 }
 
 Return all keys from the schema. If the input contains bullet lists or section text, convert them into the matching arrays.
+Requirements must keep important details, for example "1+ years of commercial experience with Python", not just "Python".
 
 Input:
 {input_text}
